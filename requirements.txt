@@ -1,0 +1,55 @@
+# =============================================================================
+# Response Time Analyzer - Dependencies
+# =============================================================================
+# This file lists all Python packages required to run the application.
+# 
+# TO INSTALL:
+# -----------
+# pip install -r requirements.txt
+#
+# WHY THESE VERSIONS:
+# -------------------
+# We pin specific versions to ensure reproducibility and avoid breaking changes.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# CORE FRAMEWORK
+# -----------------------------------------------------------------------------
+# Streamlit is our web application framework - it turns Python scripts into
+# interactive web apps with minimal code
+streamlit>=1.28.0
+
+# -----------------------------------------------------------------------------
+# DATA PROCESSING
+# -----------------------------------------------------------------------------
+# Pandas is the workhorse for data manipulation - reading CSVs, filtering,
+# grouping, and transforming data
+pandas>=2.0.0
+
+# NumPy provides fast numerical operations - we use it for array math
+# and statistical calculations
+numpy>=1.24.0
+
+# OpenPyXL allows us to read Excel files (.xlsx) - many users export from Excel
+openpyxl>=3.1.0
+
+# python-dateutil helps parse dates in many formats - critical for handling
+# the variety of datetime formats users might have
+python-dateutil>=2.8.0
+
+# -----------------------------------------------------------------------------
+# STATISTICAL ANALYSIS
+# -----------------------------------------------------------------------------
+# SciPy provides statistical tests - chi-square, t-tests, and more
+scipy>=1.11.0
+
+# Statsmodels gives us regression models - logistic regression, mixed effects,
+# and detailed statistical summaries with p-values and confidence intervals
+statsmodels>=0.14.0
+
+# -----------------------------------------------------------------------------
+# VISUALIZATION
+# -----------------------------------------------------------------------------
+# Plotly creates interactive charts - users can hover, zoom, and explore
+plotly>=5.18.0
+
