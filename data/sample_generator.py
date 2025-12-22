@@ -34,7 +34,7 @@ from config.settings import SAMPLE_DATA_CONFIG
 def generate_sample_data(
     n_leads: Optional[int] = None,
     n_weeks: int = 8,
-    random_seed: int = 42
+    random_seed: Optional[int] = None
 ) -> pd.DataFrame:
     """
     Generate realistic sample lead data for the Response Time Analyzer.
@@ -80,8 +80,10 @@ def generate_sample_data(
         Number of weeks of data to generate (default: 8).
         More weeks = more data for week-over-week analysis.
         Recommended: 4-12 weeks for best results.
-    random_seed : int
-        Seed for reproducibility
+    random_seed : int, optional
+        Seed for reproducibility. If None (default), data will be different
+        each time the function is called. Set to an integer for reproducible
+        results (useful for testing).
         
     RETURNS:
     --------
@@ -90,18 +92,20 @@ def generate_sample_data(
         
     EXAMPLE:
     --------
-    >>> # Generate 8 weeks of data (default)
+    >>> # Generate 8 weeks of data (default, different each time)
     >>> sample_df = generate_sample_data()
     >>> print(f"Generated {len(sample_df)} sample leads")
     
     >>> # Generate 4 weeks of data for quicker testing
     >>> sample_df = generate_sample_data(n_weeks=4)
     
-    >>> # Generate 12 weeks to see longer-term trends
-    >>> sample_df = generate_sample_data(n_weeks=12)
+    >>> # Generate reproducible data with a fixed seed
+    >>> sample_df = generate_sample_data(n_weeks=8, random_seed=42)
     """
-    # Set random seed for reproducibility
-    np.random.seed(random_seed)
+    # Set random seed only if provided (for reproducibility)
+    # If None, numpy will use its own random state (different each time)
+    if random_seed is not None:
+        np.random.seed(random_seed)
     
     # Get config values
     config = SAMPLE_DATA_CONFIG

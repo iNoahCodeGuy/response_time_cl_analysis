@@ -29,7 +29,10 @@ def get_p_value_explanation(p_value: float) -> Dict[str, Any]:
     Convert a p-value into a logical, first-principles explanation.
     
     The p-value answers a fundamental epistemological question:
-    "Given what we observed, how confident can we be that the pattern is real?"
+    "Given what we observed, how confident can we be that the association is not due to random chance?"
+    
+    IMPORTANT: This measures statistical significance of an association, not causal certainty.
+    A significant p-value means the association is unlikely to be random, but does NOT prove causation.
     """
     # Cap confidence at 99.99% for readability
     confidence_pct = min((1 - p_value) * 100, 99.99)
@@ -42,14 +45,16 @@ def get_p_value_explanation(p_value: float) -> Dict[str, Any]:
             'emoji': '✅',
             'trust_level': 'Extremely high certainty',
             'plain_english': (
-                f"The probability of observing these results by chance alone is vanishingly small — "
+                f"The probability of observing this association by chance alone is vanishingly small — "
                 f"less than {p_value*100:.4f}%. To put this in perspective: if we repeated this analysis "
                 f"ten thousand times with random data, we would expect to see results this strong "
-                f"less than once. This is not chance. This is a genuine pattern in reality."
+                f"less than once. This is not random chance. However, this does not prove causation — "
+                f"the association could still be explained by unmeasured confounders or selection mechanisms."
             ),
             'first_principles': (
                 "When the probability of chance producing our results falls below one in ten thousand, "
-                "we have moved beyond reasonable doubt. The pattern exists."
+                "we can be confident the association is statistically significant. However, statistical "
+                "significance measures whether the pattern is real (not random), not whether it is causal."
             ),
             'color': 'green'
         }
@@ -61,13 +66,14 @@ def get_p_value_explanation(p_value: float) -> Dict[str, Any]:
             'emoji': '✅',
             'trust_level': 'Very high certainty',
             'plain_english': (
-                f"The probability of chance alone producing these results is approximately {p_value*100:.2f}% — "
+                f"The probability of chance alone producing this association is approximately {p_value*100:.2f}% — "
                 f"roughly 1 in {int(1/p_value):,}. When we observe something this unlikely to occur by accident, "
-                f"the logical conclusion is that we are observing a real phenomenon, not statistical noise."
+                f"we can be confident we are observing a real association, not statistical noise. "
+                f"However, this does not establish causation — the association could still be explained by confounders."
             ),
             'first_principles': (
-                "At this level of improbability, the burden of proof shifts. "
-                "It becomes unreasonable to attribute these results to chance."
+                "At this level of improbability, we can reject the null hypothesis of no association. "
+                "However, this only tells us the association is statistically significant, not that it is causal."
             ),
             'color': 'green'
         }
@@ -80,12 +86,14 @@ def get_p_value_explanation(p_value: float) -> Dict[str, Any]:
             'trust_level': 'High certainty',
             'plain_english': (
                 f"There is approximately a {p_value*100:.1f}% probability — about 1 in {int(1/p_value):,} — "
-                f"that these results occurred by random chance. While not impossible, this is sufficiently "
-                f"improbable that we can proceed with confidence that the pattern reflects reality."
+                f"that this association occurred by random chance. While not impossible, this is sufficiently "
+                f"improbable that we can proceed with confidence that the association is statistically significant. "
+                f"However, this does not prove causation."
             ),
             'first_principles': (
                 "When something has less than a 1% chance of being random, "
-                "we are justified in treating it as a real effect."
+                "we are justified in treating it as a statistically significant association. "
+                "This is different from establishing causation, which requires experimental evidence."
             ),
             'color': 'green'
         }
@@ -97,13 +105,15 @@ def get_p_value_explanation(p_value: float) -> Dict[str, Any]:
             'emoji': '✅',
             'trust_level': 'Good certainty',
             'plain_english': (
-                f"The probability of these results arising from chance is {p_value*100:.1f}%. "
+                f"The probability of this association arising from chance is {p_value*100:.1f}%. "
                 f"By conventional scientific standards, this crosses the threshold for statistical significance. "
-                f"We can reasonably conclude that a real pattern exists, though some caution remains warranted."
+                f"We can reasonably conclude that a statistically significant association exists. "
+                f"However, this does not prove causation — observational data cannot establish causal relationships."
             ),
             'first_principles': (
                 "The 5% threshold exists because we accept a small margin of error. "
-                "Results below this threshold are more likely real than not."
+                "Results below this threshold indicate a statistically significant association. "
+                "Establishing causation requires experimental evidence beyond statistical significance."
             ),
             'color': 'green'
         }

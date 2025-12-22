@@ -238,7 +238,7 @@ def render_executive_summary(
     
     if chi_sq.is_significant and regression_result.is_response_time_significant:
         st.success(f"""
-        **The evidence supports a causal relationship between response speed and conversion.**
+        **The evidence demonstrates a statistically significant association between response speed and conversion.**
         
         Leads receiving responses within **{fastest_bucket['bucket']}** convert at 
         **{fastest_bucket['close_rate']*100:.1f}%** — a rate **{rate_multiplier:.1f}× higher** than 
@@ -246,11 +246,13 @@ def render_executive_summary(
         
         This pattern is:
         - **Statistically significant** — the probability of observing this by chance is {p_exp['luck_chance']}
-        - **Robust to confounding** — the effect persists after controlling for lead source
+        - **Robust to observed confounders** — the association persists after controlling for lead source
         - **Practically meaningful** — a {rate_diff*100:.1f} percentage point difference translates 
           to substantial revenue impact at scale
         
-        **Recommendation:** Investments in reducing response time are justified by this evidence.
+        **Recommendation:** Before committing to major investments, run a randomized controlled experiment 
+        (A/B test) to establish causation definitively. While the observational evidence is strong, 
+        only experimental validation can confirm that faster responses *cause* higher conversion rates.
         """)
     elif chi_sq.is_significant and not regression_result.is_response_time_significant:
         st.warning(f"""
@@ -316,10 +318,10 @@ def render_executive_summary(
     
     with col4:
         st.metric(
-            "Statistical Certainty",
+            "Statistical Significance",
             p_exp['confidence'],
             p_exp['verdict'],
-            help=f"Probability this pattern is real, not random chance (p-value: {p_value:.4f})",
+            help=f"Confidence that the association is not due to random chance (p-value: {p_value:.4f}). This measures statistical significance of the association, not causal certainty.",
             delta_color="normal" if chi_sq.is_significant else "off"
         )
         st.caption(f"Chance of luck: {p_exp['luck_chance']}")
@@ -354,7 +356,19 @@ def render_executive_summary(
         
         ### The Confounding Check
         
-        {"**Passed.** We tested whether lead source differences could explain this pattern. They cannot. The effect of response speed persists after controlling for lead source, which strengthens our confidence in a causal interpretation." if regression_result.is_response_time_significant else "**Caution warranted.** When we control for lead source, the effect weakens. Some of the apparent relationship may be attributable to confounding rather than a true causal mechanism. A controlled experiment would provide more definitive evidence."}
+        {"**Association persists after controlling for lead source.** We tested whether lead source differences could explain this pattern. The association between response speed and conversion remains after controlling for lead source. However, this only addresses *one* potential confounder. Unmeasured confounders (such as lead quality signals that drive prioritization, salesperson skill differences, or time-of-day effects) may still explain the relationship. Only a randomized experiment can definitively establish causation." if regression_result.is_response_time_significant else "**Caution warranted.** When we control for lead source, the association weakens. Some of the apparent relationship may be attributable to confounding rather than a true causal mechanism. A controlled experiment would provide more definitive evidence."}
+        
+        ### Causal Inference Limitations
+        
+        **This analysis cannot establish causation.** This is observational data, not experimental. The observed association could be explained by:
+        
+        - **Selection mechanisms:** Salespeople may prioritize leads that appear more likely to convert, creating a spurious correlation between speed and success
+        - **Unmeasured confounders:** Lead quality signals, salesperson skill differences, or time-of-day effects that we cannot observe or control for
+        - **Reverse causation:** Higher-value leads may receive faster responses, rather than speed causing higher conversion
+        
+        **What we can conclude:** There is a statistically significant association between response time and conversion rates that persists after controlling for lead source. This is consistent with a causal effect, but observational data alone cannot prove it.
+        
+        **Recommended next step:** Before making major staffing or infrastructure investments, conduct a randomized controlled experiment (A/B test) where leads are randomly assigned to response time conditions, independent of lead characteristics.
         """)
     
     # =========================================================================
@@ -804,13 +818,20 @@ def render_regression_step(regression_result, show_math: bool) -> None:
     # Show result prominently
     if regression_result.is_response_time_significant:
         st.success("""
-        **✅ Great news: Response time genuinely matters!**
+        **✅ The association persists after controlling for lead source.**
         
         Even when we compare leads from the *same source* (e.g., only looking at website leads, 
         or only looking at referrals), faster responses still predict more sales.
         
-        **Translation:** Speed helps across the board — it's not just that certain lead types 
-        happen to get both fast responses and high close rates.
+        **Important caveat:** This only controls for *one* potential confounder (lead source). 
+        The association could still be explained by other unmeasured confounders such as:
+        - Lead quality signals that drive prioritization (salespeople may prioritize leads that 
+          appear more likely to convert, creating a spurious correlation)
+        - Salesperson skill differences (better salespeople may both respond faster and close more)
+        - Time-of-day or day-of-week effects
+        
+        **This analysis cannot prove causation.** Only a randomized experiment can definitively 
+        establish that faster responses *cause* higher conversion rates.
         """)
     else:
         st.warning("""
@@ -890,9 +911,10 @@ def render_regression_step(regression_result, show_math: bool) -> None:
                 'Range': f"Could be {ci_low:.1f}x to {ci_high:.1f}x"
             })
         
-        # Add reference row
+        # Add reference row (the reference category doesn't appear in odds_ratios)
+        reference_bucket = regression_result.reference_bucket or '60+ min'
         friendly_rows.append({
-            'Response Speed': '60+ min (baseline)',
+            'Response Speed': f'{reference_bucket} (baseline)',
             'Your Advantage': '1.0x (this is our comparison point)',
             'Compared to Slow': 'This is the baseline',
             'Confidence': '—',
@@ -1419,20 +1441,37 @@ def render_recommendations(stat_results, regression_result, advanced_results) ->
     
     if chi_sq.is_significant and regression_result.is_response_time_significant:
         st.markdown("""
-        ### Action: Invest in Faster Response Times
+        ### Action: Validate with Experiment Before Major Investment
         
         Based on this analysis, faster response times are associated with 
-        higher close rates, even after controlling for lead source.
+        higher close rates, even after controlling for lead source. However, 
+        this is observational data and cannot prove causation.
         
-        **Recommended actions:**
-        1. Set response time SLAs (e.g., respond within 15 minutes)
-        2. Implement alerts for leads waiting too long
-        3. Consider after-hours coverage for night/weekend leads
-        4. Monitor response time as a key performance metric
+        **Recommended actions (in priority order):**
+        1. **Run a randomized A/B test** to establish causation before major investments:
+           - Randomly assign leads to fast vs. slow response conditions
+           - Ensure assignment is independent of lead characteristics
+           - Measure conversion rates in each condition
+           - This is the only way to definitively prove that speed causes success
         
-        **Estimated impact:** Based on the data, improving response time 
-        from the slowest bucket to the fastest could increase close rates 
-        by the observed difference.
+        2. If experimental validation confirms the effect:
+           - Set response time SLAs (e.g., respond within 15 minutes)
+           - Implement alerts for leads waiting too long
+           - Consider after-hours coverage for night/weekend leads
+           - Monitor response time as a key performance metric
+        
+        3. If experimental validation does NOT confirm the effect:
+           - The observational association was likely due to confounding
+           - Focus optimization efforts on factors that genuinely drive conversion
+        
+        **Why experimental validation matters:** The observed association could be due to 
+        selection mechanisms (salespeople prioritizing high-quality leads), unmeasured 
+        confounders, or reverse causation. Only a randomized experiment can rule these out.
+        
+        **Estimated impact (if causation is confirmed):** Based on the observational data, 
+        improving response time from the slowest bucket to the fastest could potentially 
+        increase close rates by the observed difference. However, this estimate assumes 
+        causation, which requires experimental validation.
         """)
     elif chi_sq.is_significant:
         st.markdown("""
@@ -1569,10 +1608,16 @@ THE BOTTOM LINE
     
     if is_significant and regression_result.is_response_time_significant:
         summary += f"""
-✅ RESPONDING FASTER LEADS TO MORE SALES
+✅ STRONG ASSOCIATION BETWEEN RESPONSE TIME AND CONVERSION
 
-We analyzed {len(df):,} leads and found clear evidence that response time 
-matters. This isn't random luck - we're {confidence_pct:.1f}% confident.
+We analyzed {len(df):,} leads and found a statistically significant association 
+between faster response times and higher conversion rates. The probability this 
+pattern is due to random chance is less than {p_value*100:.4f}%.
+
+However, this is observational data and cannot prove causation. The association 
+could be explained by unmeasured confounders or selection mechanisms. Before 
+making major investments, we recommend running a randomized controlled experiment 
+to establish causation definitively.
 
 """
     elif is_significant:
@@ -1633,17 +1678,23 @@ THE COMPARISON
                          WHAT THE STATISTICS MEAN
 ================================================================================
 
-IS THIS REAL OR RANDOM LUCK?
-----------------------------
-We used statistical tests to check if the pattern is real:
+IS THIS ASSOCIATION REAL OR RANDOM LUCK?
+----------------------------------------
+We used statistical tests to check if the association is statistically significant:
 
-• Result: {"The pattern IS real" if is_significant else "We can't be sure the pattern is real"}
-• Confidence: {confidence_pct:.1f}%
-• Translation: There's {doubt_words} this is just random variation
+• Result: {"The association IS statistically significant" if is_significant else "We can't be sure the association is real"}
+• Statistical significance: {confidence_pct:.1f}% confidence the association is not due to random chance
+• Translation: There's {doubt_words} this association is just random variation
+
+IMPORTANT: Statistical significance measures whether the association is real (not random), 
+NOT whether it is causal. This analysis cannot prove that faster responses CAUSE higher 
+conversion rates - only that there is a statistically significant association.
 
 Think of it like flipping a coin. If you got 60 heads out of 100 flips, 
-you'd wonder if the coin is unfair. Statistics helps us answer that 
-question - and for your data, {"the answer is yes, the pattern is real" if is_significant else "we can't rule out that it's just chance"}.
+you'd wonder if the coin is unfair. Statistics helps us answer whether the pattern 
+is likely real (not random) - and for your data, {"the association is statistically significant" if is_significant else "we can't rule out that it's just chance"}.
+
+However, even a real (non-random) association does not prove causation.
 
 """
     
@@ -1651,12 +1702,20 @@ question - and for your data, {"the answer is yes, the pattern is real" if is_si
         summary += f"""
 DOES IT HOLD UP UNDER SCRUTINY?
 -------------------------------
-We also checked: "Is this still true when we account for lead source?"
+We also checked: "Is this association still present when we account for lead source?"
 (Some lead sources might naturally have both faster responses AND higher 
 close rates, which could create a misleading pattern.)
 
-✅ YES - Response time still matters even after accounting for lead source.
-   This is strong evidence that faster responses genuinely help.
+✅ YES - The association persists after accounting for lead source.
+   However, this only controls for ONE potential confounder. The association could 
+   still be explained by:
+   - Lead quality signals that drive prioritization
+   - Salesperson skill differences
+   - Time-of-day or day-of-week effects
+   - Other unmeasured confounders
+
+This observational analysis cannot prove causation. Only a randomized controlled 
+experiment can definitively establish that faster responses cause higher conversion rates.
 
 """
     elif is_significant:
@@ -1694,15 +1753,30 @@ Logistic Regression (controls for lead source):
 ================================================================================
 
 1. CORRELATION ≠ CAUSATION
-   This is observational data. We found a pattern, but we can't prove 
-   that faster responses CAUSE more sales. An A/B test would be needed 
-   for definitive proof.
+   This is observational data, not experimental. We found a statistically 
+   significant association, but we CANNOT prove that faster responses CAUSE 
+   more sales. The association could be due to:
+   - Selection mechanisms (salespeople prioritizing high-quality leads)
+   - Unmeasured confounders (lead quality, salesperson skill, timing effects)
+   - Reverse causation (high-value leads receive faster responses)
 
 2. WE CAN ONLY CONTROL FOR WHAT WE MEASURE
-   There might be other factors we didn't account for that explain 
-   the relationship.
+   We controlled for lead source, but there are likely other factors we didn't 
+   account for that could explain the relationship. We cannot control for factors 
+   we don't observe or measure.
 
-3. RESULTS ARE SPECIFIC TO YOUR DATA
+3. STATISTICAL SIGNIFICANCE ≠ CAUSAL CERTAINTY
+   A statistically significant association means the pattern is unlikely to be 
+   random. It does NOT mean the relationship is causal. Only a randomized 
+   experiment can establish causation.
+
+4. RECOMMENDED NEXT STEP: RANDOMIZED EXPERIMENT
+   Before making major staffing or infrastructure investments, run a randomized 
+   controlled experiment (A/B test) where leads are randomly assigned to response 
+   time conditions, independent of lead characteristics. This is the only way to 
+   definitively prove that speed causes conversion.
+
+5. RESULTS ARE SPECIFIC TO YOUR DATA
    What works in this time period and market might not apply elsewhere.
 
 ================================================================================

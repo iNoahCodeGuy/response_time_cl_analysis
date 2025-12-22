@@ -49,12 +49,13 @@ class RegressionResult:
     is_response_time_significant: bool
     interpretation: str
     model_object: Any  # The actual statsmodels result
+    reference_bucket: Optional[str] = None  # The reference category used in regression
 
 
 def prepare_regression_data(
     df: pd.DataFrame,
     reference_bucket: Optional[str] = None
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Optional[str]]:
     """
     Prepare data for logistic regression.
     
@@ -96,17 +97,19 @@ def prepare_regression_data(
     
     # Set reference category for response bucket
     # By default, use the slowest bucket (last one) as reference
+    buckets_sorted = sorted(result['response_bucket'].dropna().unique(), key=str)
     if reference_bucket is None:
-        buckets_sorted = sorted(result['response_bucket'].dropna().unique(), key=str)
         reference_bucket = str(buckets_sorted[-1]) if buckets_sorted else None
     
-    # Convert to categorical with proper reference
+    # Convert to categorical with reference category FIRST
+    # Statsmodels uses the first category as the reference, so we put the reference bucket first
+    categories_list = [reference_bucket] + [b for b in buckets_sorted if b != reference_bucket]
     result['response_bucket'] = pd.Categorical(
         result['response_bucket'].astype(str),
-        categories=sorted(result['response_bucket'].astype(str).unique(), key=str)
+        categories=categories_list
     )
     
-    return result
+    return result, reference_bucket
 
 
 def run_logistic_regression(
@@ -166,7 +169,7 @@ def run_logistic_regression(
     >>> print(result.interpretation)
     """
     # Prepare data
-    reg_data = prepare_regression_data(df)
+    reg_data, reference_bucket = prepare_regression_data(df)
     
     # Build formula
     formula_parts = ['ordered ~ C(response_bucket)']
@@ -198,7 +201,8 @@ def run_logistic_regression(
             p_values={},
             is_response_time_significant=False,
             interpretation=f"Model failed to converge: {str(e)}",
-            model_object=None
+            model_object=None,
+            reference_bucket=reference_bucket
         )
     
     # Extract coefficients
@@ -246,7 +250,8 @@ def run_logistic_regression(
         p_values=p_values,
         is_response_time_significant=is_significant,
         interpretation=interpretation,
-        model_object=model
+        model_object=model,
+        reference_bucket=reference_bucket
     )
 
 
