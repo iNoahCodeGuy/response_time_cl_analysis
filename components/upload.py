@@ -140,6 +140,10 @@ def render_upload_section() -> Tuple[Optional[pd.DataFrame], str]:
     
     # Handle sample data request
     if use_sample:
+        # Clear any previously cached data to ensure fresh generation
+        if 'uploaded_data' in st.session_state:
+            del st.session_state['uploaded_data']
+        
         with st.spinner(f"Generating {n_weeks} weeks of sample data..."):
             df = generate_sample_data(n_weeks=n_weeks)
             st.session_state['uploaded_data'] = df

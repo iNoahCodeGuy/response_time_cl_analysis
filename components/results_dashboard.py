@@ -61,7 +61,11 @@ from explanations.explainers import (
     format_wow_change,
     render_mixed_effects_explainer,
     render_within_rep_explainer,
-    render_confounding_explainer
+    render_confounding_explainer,
+    get_step_bridge,
+    generate_chi_square_worked_example,
+    render_chi_square_worked_example,
+    generate_proportion_test_worked_example
 )
 
 
@@ -134,6 +138,12 @@ def render_results_dashboard(
     render_executive_summary(close_rates, stat_results, regression_result, advanced_results)
     
     # =========================================================================
+    # YOUR QUESTIONS ANSWERED - Direct answers with actual data
+    # =========================================================================
+    st.markdown("---")
+    render_questions_answered(df, close_rates, stat_results, regression_result)
+    
+    # =========================================================================
     # STEP-BY-STEP ANALYSIS
     # =========================================================================
     st.markdown("---")
@@ -163,11 +173,11 @@ def render_results_dashboard(
     
     # Step 3: Chi-Square Test
     with tabs[2]:
-        render_chi_square_step(stat_results, show_math)
+        render_chi_square_step(df, stat_results, show_math)
     
     # Step 4: Proportion Tests
     with tabs[3]:
-        render_proportions_step(stat_results, show_math)
+        render_proportions_step(df, stat_results, show_math)
     
     # Step 5: Regression
     with tabs[4]:
@@ -417,8 +427,255 @@ def render_executive_summary(
                 """)
 
 
+def render_questions_answered(
+    df: pd.DataFrame,
+    close_rates: pd.DataFrame,
+    stat_results: Dict[str, Any],
+    regression_result
+) -> None:
+    """
+    Render direct answers to the user's core questions using their actual data.
+    
+    This section directly addresses the questions users came to answer:
+    - Is it beneficial to reach out in 15 minutes?
+    - Is under an hour sufficient?
+    - How do you know?
+    """
+    st.subheader("❓ Your Questions Answered")
+    
+    st.markdown("""
+    *Before diving into the detailed analysis, here are direct answers to the questions 
+    you likely came here to answer — backed by your actual data.*
+    """)
+    
+    # Extract key data points for fastest bucket (0-15 min)
+    fastest = close_rates.iloc[0]
+    fast_sales = int(fastest['n_orders'])
+    fast_leads = int(fastest['n_leads'])
+    fast_rate = fastest['close_rate']
+    
+    # Find the 15-60 min bucket (typically second)
+    medium_bucket = None
+    for _, row in close_rates.iterrows():
+        bucket_name = row['bucket'].lower()
+        if '15' in bucket_name and '60' in bucket_name:
+            medium_bucket = row
+            break
+        elif '16' in bucket_name or '15-' in bucket_name:
+            medium_bucket = row
+            break
+    
+    # If we can't find a medium bucket, use the second one
+    if medium_bucket is None and len(close_rates) > 1:
+        medium_bucket = close_rates.iloc[1]
+    
+    # Extract slowest bucket (60+ min or last bucket)
+    slowest = close_rates.iloc[-1]
+    slow_sales = int(slowest['n_orders'])
+    slow_leads = int(slowest['n_leads'])
+    slow_rate = slowest['close_rate']
+    
+    # Calculate the difference
+    rate_diff = fast_rate - slow_rate
+    rate_multiplier = fast_rate / slow_rate if slow_rate > 0 else float('inf')
+    
+    # Get chi-square results for confidence
+    chi_sq = stat_results['chi_square']
+    p_exp = get_p_value_explanation(chi_sq.p_value)
+    
+    # =========================================================================
+    # QUESTION 1: Is it beneficial to reach out in 15 minutes?
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Q: Is it beneficial to reach out within 15 minutes?")
+    
+    if chi_sq.is_significant and rate_diff > 0:
+        st.success(f"""
+        **A: Yes.** Your data shows a clear benefit to faster response.
+        """)
+        
+        # Show the actual calculation
+        st.markdown("#### Here's the math with your actual numbers:")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown(f"**Your fastest responders ({fastest['bucket']})**")
+            st.markdown(f"""
+            - Sales: **{fast_sales:,}**
+            - Leads: **{fast_leads:,}**
+            - Close rate: **{fast_sales:,} ÷ {fast_leads:,} = {fast_rate*100:.1f}%**
+            """)
+        
+        with col2:
+            st.markdown(f"**Your slowest responders ({slowest['bucket']})**")
+            st.markdown(f"""
+            - Sales: **{slow_sales:,}**
+            - Leads: **{slow_leads:,}**
+            - Close rate: **{slow_sales:,} ÷ {slow_leads:,} = {slow_rate*100:.1f}%**
+            """)
+        
+        with col3:
+            st.markdown("**The Difference**")
+            st.markdown(f"""
+            - Gap: **{rate_diff*100:.1f} percentage points**
+            - Multiplier: **{rate_multiplier:.1f}× better**
+            - Confidence: **{p_exp['confidence']}**
+            """)
+        
+        # Concrete impact
+        st.markdown("#### What this means in practice:")
+        extra_sales_per_100 = rate_diff * 100
+        st.info(f"""
+        📊 **For every 100 leads**, responding within **{fastest['bucket']}** instead of 
+        **{slowest['bucket']}** is associated with approximately **{extra_sales_per_100:.0f} additional sales**.
+        """)
+    else:
+        st.warning("""
+        **A: The data does not show a statistically significant benefit.**
+        
+        While there may be observed differences, they could be due to random variation.
+        See the detailed analysis below for more information.
+        """)
+    
+    # =========================================================================
+    # QUESTION 2: Is under an hour sufficient?
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Q: Is responding under an hour sufficient, or do you need to be faster?")
+    
+    # Show the step-down in performance
+    st.markdown("#### Performance by response time bucket:")
+    
+    # Create a simple comparison table
+    comparison_data = []
+    prev_rate = None
+    
+    for _, row in close_rates.iterrows():
+        bucket_rate = row['close_rate']
+        bucket_data = {
+            'Response Time': row['bucket'],
+            'Close Rate': f"{bucket_rate*100:.1f}%",
+            'Sales': f"{int(row['n_orders']):,}",
+            'Leads': f"{int(row['n_leads']):,}"
+        }
+        
+        if prev_rate is not None:
+            drop = prev_rate - bucket_rate
+            bucket_data['Drop from Previous'] = f"↓ {drop*100:.1f}pp"
+        else:
+            bucket_data['Drop from Previous'] = "—"
+        
+        comparison_data.append(bucket_data)
+        prev_rate = bucket_rate
+    
+    comparison_df = pd.DataFrame(comparison_data)
+    st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+    
+    # Interpretation
+    if medium_bucket is not None:
+        medium_rate = medium_bucket['close_rate']
+        gap_fast_vs_medium = fast_rate - medium_rate
+        gap_medium_vs_slow = medium_rate - slow_rate
+        
+        if gap_fast_vs_medium > 0.01:  # More than 1pp difference
+            st.markdown(f"""
+            **Interpretation:** There's a noticeable step-down at each tier:
+            - **{fastest['bucket']}** → **{medium_bucket['bucket']}**: Drop of **{gap_fast_vs_medium*100:.1f}** percentage points
+            - **{medium_bucket['bucket']}** → **{slowest['bucket']}**: Drop of **{gap_medium_vs_slow*100:.1f}** percentage points
+            
+            ⚡ **Bottom line:** Under an hour is better than over an hour, but under 15 minutes is 
+            better still. Speed matters at every threshold.
+            """)
+        else:
+            st.markdown(f"""
+            **Interpretation:** The biggest gap is between under an hour and over an hour.
+            
+            ⚡ **Bottom line:** Getting under an hour is the most important threshold. 
+            Additional speed gains show diminishing returns in your data.
+            """)
+    
+    # =========================================================================
+    # QUESTION 3: How do you know?
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### Q: How do you know this isn't just coincidence?")
+    
+    st.markdown("""
+    We ran **three statistical tests** to validate this finding:
+    """)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        chi_status = "✅" if chi_sq.is_significant else "⚠️"
+        st.markdown(f"""
+        **{chi_status} Test 1: Overall Pattern**
+        
+        *Chi-square test*
+        
+        Is there ANY relationship between 
+        speed and conversion?
+        
+        **Result:** p = {chi_sq.p_value:.4f}
+        {p_exp['verdict']}
+        """)
+    
+    with col2:
+        # Get the pairwise test for fastest vs slowest
+        pairwise = stat_results.get('pairwise_comparisons', [])
+        key_comparison = None
+        for comp in pairwise:
+            if 'adjusted_p' in comp:
+                key_comparison = comp
+                break
+        
+        if key_comparison:
+            pair_status = "✅" if key_comparison.get('adjusted_p', 1) < 0.05 else "⚠️"
+            st.markdown(f"""
+            **{pair_status} Test 2: Direct Comparison**
+            
+            *Z-test for proportions*
+            
+            Is fast specifically better 
+            than slow?
+            
+            **Result:** Adjusted p = {key_comparison.get('adjusted_p', 'N/A'):.4f}
+            {'Statistically significant' if key_comparison.get('adjusted_p', 1) < 0.05 else 'Not significant'}
+            """)
+        else:
+            st.markdown("""
+            **Test 2: Direct Comparison**
+            
+            *Z-test for proportions*
+            
+            See detailed analysis below.
+            """)
+    
+    with col3:
+        reg_status = "✅" if regression_result.is_response_time_significant else "⚠️"
+        st.markdown(f"""
+        **{reg_status} Test 3: Controlling for Confounds**
+        
+        *Logistic regression*
+        
+        Does the effect hold when we 
+        account for lead source?
+        
+        **Result:** {'Significant after controls' if regression_result.is_response_time_significant else 'Not significant after controls'}
+        """)
+    
+    st.info("""
+    📚 **Want to understand the math?** Each test is explained in detail in the 
+    "Detailed Analysis" section below, with step-by-step calculations using your actual data.
+    """)
+
+
 def render_data_overview_step(df: pd.DataFrame, close_rates: pd.DataFrame) -> None:
     """Render the data overview step with first-principles explanation."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('data_overview')}")
+    
     st.markdown("### Step 1: Establishing the Foundation")
     
     st.markdown("""
@@ -508,6 +765,9 @@ def render_data_overview_step(df: pd.DataFrame, close_rates: pd.DataFrame) -> No
 
 def render_close_rates_step(df: pd.DataFrame, close_rates: pd.DataFrame, show_math: bool) -> None:
     """Render the close rates step."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('close_rates')}")
+    
     st.markdown("### Step 2: Close Rates by Response Time")
     
     st.markdown("""
@@ -597,8 +857,11 @@ def render_close_rates_step(df: pd.DataFrame, close_rates: pd.DataFrame, show_ma
             """)
 
 
-def render_chi_square_step(stat_results: Dict[str, Any], show_math: bool) -> None:
+def render_chi_square_step(df: pd.DataFrame, stat_results: Dict[str, Any], show_math: bool) -> None:
     """Render the chi-square test step with plain-English explanation."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('chi_square')}")
+    
     chi_sq = stat_results['chi_square']
     p_value = chi_sq.p_value
     p_exp = get_p_value_explanation(p_value)
@@ -642,6 +905,15 @@ def render_chi_square_step(stat_results: Dict[str, Any], show_math: bool) -> Non
         
         **What this means:** {p_exp['plain_english']}
         """)
+    
+    # =========================================================================
+    # VISIBLE WORKED EXAMPLE - Show the calculation with actual data
+    # =========================================================================
+    st.markdown("---")
+    
+    # Generate and display the worked example using actual data
+    worked_example = generate_chi_square_worked_example(df)
+    render_chi_square_worked_example(worked_example)
     
     # Technical details with step-by-step walkthrough
     with st.expander("🔢 Technical Details (Chi-Square Test)", expanded=False):
@@ -697,8 +969,11 @@ def render_chi_square_step(stat_results: Dict[str, Any], show_math: bool) -> Non
             """)
 
 
-def render_proportions_step(stat_results: Dict[str, Any], show_math: bool) -> None:
+def render_proportions_step(df: pd.DataFrame, stat_results: Dict[str, Any], show_math: bool) -> None:
     """Render the proportions comparison step."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('proportions')}")
+    
     st.markdown("### Step 4: Head-to-Head Comparisons")
     
     st.markdown("""
@@ -777,10 +1052,99 @@ def render_proportions_step(stat_results: Dict[str, Any], show_math: bool) -> No
             The difference we see ({diff:+.1f}pp) could be random variation. 
             Either there's no real difference, or we need more data to detect it.
             """)
+        
+        # =========================================================================
+        # WORKED EXAMPLE - Show the actual calculation with user's numbers
+        # =========================================================================
+        st.markdown("---")
+        st.markdown("### Let's Verify This With Your Data")
+        
+        st.markdown("""
+        The z-test compares two proportions and asks: *"Is this difference too large to be random chance?"*
+        
+        Here's the step-by-step calculation for the key comparison:
+        """)
+        
+        # Extract the details
+        if hasattr(extreme, 'details') and extreme.details:
+            b1 = extreme.details.get('bucket1', {})
+            b2 = extreme.details.get('bucket2', {})
+            
+            fast_name = b1.get('name', 'Fast')
+            slow_name = b2.get('name', 'Slow')
+            fast_sales = b1.get('n_orders', 0)
+            fast_leads = b1.get('n_leads', 1)
+            slow_sales = b2.get('n_orders', 0)
+            slow_leads = b2.get('n_leads', 1)
+            fast_rate = b1.get('close_rate', 0)
+            slow_rate = b2.get('close_rate', 0)
+            
+            # Step 1: Show the raw numbers
+            st.markdown(f"#### Step 1: Your actual numbers")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"""
+                **{fast_name}**
+                - Sales: **{fast_sales:,}**
+                - Leads: **{fast_leads:,}**
+                - Close rate: {fast_sales:,} ÷ {fast_leads:,} = **{fast_rate*100:.1f}%**
+                """)
+            
+            with col2:
+                st.markdown(f"""
+                **{slow_name}**
+                - Sales: **{slow_sales:,}**
+                - Leads: **{slow_leads:,}**
+                - Close rate: {slow_sales:,} ÷ {slow_leads:,} = **{slow_rate*100:.1f}%**
+                """)
+            
+            # Step 2: The difference
+            diff_pp = (fast_rate - slow_rate) * 100
+            st.markdown(f"#### Step 2: Calculate the difference")
+            st.markdown(f"""
+            **Difference:** {fast_rate*100:.1f}% - {slow_rate*100:.1f}% = **{diff_pp:+.1f} percentage points**
+            """)
+            
+            # Step 3: The test statistic
+            st.markdown(f"#### Step 3: Is this difference statistically significant?")
+            
+            z_stat = extreme.statistic if hasattr(extreme, 'statistic') else 0
+            p_val = extreme.p_value if hasattr(extreme, 'p_value') else 1
+            
+            st.markdown(f"""
+            We calculate a **z-score** of **{z_stat:.2f}**, which tells us how many "standard deviations" 
+            this difference is from what we'd expect by chance.
+            
+            - **Z-score:** {z_stat:.2f}
+            - **P-value:** {p_val:.4f}
+            
+            **Translation:** {p_exp['plain_english']}
+            """)
+            
+            # Step 4: Conclusion
+            st.markdown(f"#### Step 4: The Verdict")
+            
+            if extreme.is_significant:
+                st.success(f"""
+                ✅ **The {diff_pp:.1f} percentage point difference is statistically significant.**
+                
+                With {fast_leads + slow_leads:,} leads in these two buckets, we can be 
+                **{p_exp['confidence']} confident** this pattern is real, not random luck.
+                """)
+            else:
+                st.warning(f"""
+                ⚠️ **We cannot conclude the difference is statistically significant.**
+                
+                The {diff_pp:+.1f} percentage point difference could be due to random variation.
+                """)
 
 
 def render_regression_step(regression_result, show_math: bool) -> None:
     """Render the regression step with plain-English explanation."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('regression')}")
+    
     st.markdown("### Step 5: Is It Really Response Time, or Something Else?")
     
     # Plain English explanation with a concrete example
@@ -984,6 +1348,9 @@ def render_regression_step(regression_result, show_math: bool) -> None:
 
 def render_mixed_effects_step(result, show_math: bool) -> None:
     """Render the mixed effects step with first-principles explanation."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('mixed_effects')}")
+    
     st.markdown("### Step 6: Accounting for Individual Salesperson Differences")
     
     st.markdown("""
@@ -1068,6 +1435,9 @@ def render_mixed_effects_step(result, show_math: bool) -> None:
 
 def render_within_rep_step(result, df: pd.DataFrame, show_math: bool) -> None:
     """Render the within-rep analysis step with first-principles explanation."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('within_rep')}")
+    
     st.markdown("### Step 7: The Within-Person Test")
     
     st.markdown("""
@@ -1144,6 +1514,9 @@ def render_within_rep_step(result, df: pd.DataFrame, show_math: bool) -> None:
 
 def render_confounding_step(result, df: pd.DataFrame) -> None:
     """Render the confounding assessment step with first-principles explanation."""
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('confounding')}")
+    
     st.markdown("### Step 8: Comprehensive Confounding Assessment")
     
     st.markdown("""
@@ -1228,7 +1601,7 @@ def render_confounding_step(result, df: pd.DataFrame) -> None:
     render_confounding_explainer()
 
 
-def render_weekly_trends_step(weekly_analysis) -> None:
+def render_weekly_trends_step(weekly_analysis, close_rates: pd.DataFrame = None) -> None:
     """
     Render the week-over-week trends analysis step.
     
@@ -1237,6 +1610,9 @@ def render_weekly_trends_step(weekly_analysis) -> None:
     Shows how metrics are changing over time.
     Helps identify if response times are improving or declining.
     """
+    # Bridge sentence to maintain narrative flow
+    st.info(f"💡 **Why this step:** {get_step_bridge('weekly_trends')}")
+    
     st.markdown("### 📅 Week-over-Week Trends")
     
     st.markdown("""
@@ -1393,6 +1769,84 @@ def render_weekly_trends_step(weekly_analysis) -> None:
             st.info(insight)
     else:
         st.info("Keep collecting data — meaningful trends usually emerge after 4+ weeks.")
+    
+    # =========================================================================
+    # SECTION 5.5: Connection to Main Finding - Real-time Validation
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("#### 🔗 Does This Support Our Main Finding?")
+    
+    st.markdown("""
+    If faster responses truly cause higher conversion, we should see this relationship 
+    in the week-over-week data: **weeks with faster responses should have higher close rates.**
+    """)
+    
+    # Check if we have the trend data to make this assessment
+    if 'close_rate' in weekly_analysis.trends and 'response_time' in weekly_analysis.trends:
+        cr_trend = weekly_analysis.trends['close_rate']
+        rt_trend = weekly_analysis.trends['response_time']
+        
+        cr_direction = cr_trend.get('direction', 'unknown')
+        rt_direction = rt_trend.get('direction', 'unknown')
+        
+        # Check if trends are consistent with our main finding
+        # (faster response = improving, better close rate = improving)
+        if rt_direction == 'improving' and cr_direction == 'improving':
+            st.success(f"""
+            **✅ Real-time Validation: Trends Support the Finding**
+            
+            Over the past {weekly_analysis.weeks_analyzed} weeks:
+            - Response times are **getting faster** ({rt_direction}) ⚡
+            - Close rates are **improving** ({cr_direction}) 📈
+            
+            This is exactly what we'd expect if faster responses drive higher conversion.
+            The week-over-week data is **consistent** with our statistical finding.
+            """)
+        elif rt_direction == 'declining' and cr_direction == 'declining':
+            st.warning(f"""
+            **⚠️ Concerning Pattern: Both Metrics Declining**
+            
+            Over the past {weekly_analysis.weeks_analyzed} weeks:
+            - Response times are **getting slower** ({rt_direction}) 🐢
+            - Close rates are **declining** ({cr_direction}) 📉
+            
+            This pattern is **consistent** with the hypothesis that response time affects 
+            conversion — but it's moving in the wrong direction. Action may be needed.
+            """)
+        elif rt_direction == 'improving' and cr_direction == 'declining':
+            st.info(f"""
+            **ℹ️ Mixed Signals: Faster Responses, Lower Conversion**
+            
+            Over the past {weekly_analysis.weeks_analyzed} weeks:
+            - Response times are **getting faster** ({rt_direction}) ⚡
+            - Close rates are **declining** ({cr_direction}) 📉
+            
+            This is unexpected if speed is the primary driver of conversion. 
+            Other factors may be at play (lead quality, seasonality, etc.).
+            """)
+        elif rt_direction == 'declining' and cr_direction == 'improving':
+            st.info(f"""
+            **ℹ️ Mixed Signals: Slower Responses, Higher Conversion**
+            
+            Over the past {weekly_analysis.weeks_analyzed} weeks:
+            - Response times are **getting slower** ({rt_direction}) 🐢
+            - Close rates are **improving** ({cr_direction}) 📈
+            
+            This suggests other factors may be contributing to conversion success,
+            independent of response time. Lead quality or other improvements may explain this.
+            """)
+        else:
+            st.info(f"""
+            **ℹ️ Trends are Stable**
+            
+            Over the past {weekly_analysis.weeks_analyzed} weeks, metrics have been relatively stable.
+            Continue monitoring as more data accumulates.
+            """)
+    else:
+        st.info("""
+        Trend data not available. Continue collecting data to see how weekly 
+        changes in response time correlate with changes in close rate.
+        """)
     
     # =========================================================================
     # SECTION 6: Interpretation Help

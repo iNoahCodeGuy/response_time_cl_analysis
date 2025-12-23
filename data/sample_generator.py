@@ -25,6 +25,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 import sys
 import os
+import time
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -103,9 +104,12 @@ def generate_sample_data(
     >>> sample_df = generate_sample_data(n_weeks=8, random_seed=42)
     """
     # Set random seed only if provided (for reproducibility)
-    # If None, numpy will use its own random state (different each time)
+    # If None, use current time to ensure different data each time
     if random_seed is not None:
         np.random.seed(random_seed)
+    else:
+        # Use current time in microseconds as seed to ensure uniqueness
+        np.random.seed(int(time.time() * 1_000_000) % (2**32))
     
     # Get config values
     config = SAMPLE_DATA_CONFIG
@@ -116,9 +120,10 @@ def generate_sample_data(
     n = n_leads if n_leads else (leads_per_week * n_weeks)
     
     # =========================================================================
-    # STEP 1: Generate Lead Sources
+    # STEP 1: Generate Lead Sources with VARIED base close rates
     # =========================================================================
     # Each lead comes from one source, weighted by source popularity
+    # Vary base close rates slightly to create more realistic variation
     
     source_names = list(config['lead_sources'].keys())
     source_weights = [config['lead_sources'][s]['weight'] for s in source_names]
@@ -129,9 +134,19 @@ def generate_sample_data(
         p=source_weights
     )
     
-    # Get base close rate for each lead's source
+    # Vary base close rates by ±20% to add realism (some periods have better/worse sources)
+    base_close_rate_variation = np.random.uniform(0.85, 1.15, len(source_names))
+    source_base_rates_varied = {
+        source: config['lead_sources'][source]['base_close_rate'] * base_close_rate_variation[i]
+        for i, source in enumerate(source_names)
+    }
+    # Ensure rates stay within reasonable bounds (2% to 25%)
+    for source in source_base_rates_varied:
+        source_base_rates_varied[source] = np.clip(source_base_rates_varied[source], 0.02, 0.25)
+    
+    # Get base close rate for each lead's source (with variation)
     base_close_rates = np.array([
-        config['lead_sources'][source]['base_close_rate'] 
+        source_base_rates_varied[source] 
         for source in lead_sources
     ])
     
@@ -145,9 +160,12 @@ def generate_sample_data(
     rep_names = [f"Rep_{i+1:02d}" for i in range(n_reps)]
     
     # Skill is normally distributed (some reps are better than others)
-    # Skill ranges from about 0.4 to 1.6 (mean 1.0)
-    rep_skills = np.random.normal(1.0, config['rep_skill_std'], n_reps)
-    rep_skills = np.clip(rep_skills, 0.4, 1.8)  # Reasonable bounds
+    # Vary the skill variation to reduce confounding in some datasets
+    # Sometimes reps are very similar (low confounding), sometimes very different (high confounding)
+    skill_std_multiplier = np.random.uniform(0.5, 1.2)  # Reduce skill variation by up to 50%
+    rep_skill_std = config['rep_skill_std'] * skill_std_multiplier
+    rep_skills = np.random.normal(1.0, rep_skill_std, n_reps)
+    rep_skills = np.clip(rep_skills, 0.5, 1.5)  # Tighter bounds to reduce extreme variation
     
     # Assign leads to reps (roughly equal distribution with some variation)
     rep_assignments = np.random.choice(range(n_reps), size=n)
@@ -172,13 +190,16 @@ def generate_sample_data(
     lead_times = pd.Series(lead_times)
     
     # =========================================================================
-    # STEP 4: Generate Response Times
+    # STEP 4: Generate Response Times with VARIED distribution
     # =========================================================================
     # Log-normal distribution modified by rep skill
     # Better reps respond faster
+    # Vary the median response time slightly to add realism
     
     # Base response time parameters (in log-minutes)
-    median_response_mins = config['response_time_median_mins']
+    # Vary median by ±30% (some periods are busier, slower responses)
+    median_variation = np.random.uniform(0.7, 1.3)
+    median_response_mins = config['response_time_median_mins'] * median_variation
     log_std = config['response_time_std_log']
     
     # Generate base response times (log-normal)
@@ -207,31 +228,53 @@ def generate_sample_data(
     ]
     
     # =========================================================================
-    # STEP 5: Generate Order Outcomes
+    # STEP 5: Generate Order Outcomes with VARIED response time effects
     # =========================================================================
     # Close probability is affected by:
     # 1. Lead source (base rate)
     # 2. Rep skill (multiplier)
     # 3. Response time (true effect + confounding)
     
-    # True effect of response time on close rate
+    # Vary the response time effect strength dramatically to create realistic variation
+    # Sometimes the effect is strong (high significance), sometimes weak/none (low significance)
+    # Use uniform distribution with wide range to get true variety
+    # Allow 0.0 to create datasets with essentially no response time effect
+    effect_strength = np.random.uniform(0.0, 1.5)  # Range 0.0 (no effect) to 1.5 (strong effect)
+    
+    # True effect of response time on close rate (with wide variation)
     # Fast responses (<15 min) have a boost, slow responses have a penalty
+    # When effect_strength is 0, there's no effect (all multipliers = 1.0)
+    fast_boost = 1.0 + (0.25 * effect_strength)  # Ranges from 1.0 (no effect) to 1.375 (37.5% boost)
+    medium_boost = 1.0 + (0.08 * effect_strength)  # Ranges from 1.0 to 1.12
+    slow_penalty = 1.0 - (0.08 * effect_strength)  # Ranges from 1.0 to 0.88
+    very_slow_penalty = 1.0 - (0.25 * effect_strength)  # Ranges from 1.0 to 0.625
+    
     response_time_effect = np.where(
-        response_time_mins <= 15, 1.3,  # 30% boost for fast response
+        response_time_mins <= 15, fast_boost,
         np.where(
-            response_time_mins <= 30, 1.1,  # 10% boost for medium-fast
+            response_time_mins <= 30, medium_boost,
             np.where(
-                response_time_mins <= 60, 0.9,  # 10% penalty for slow
-                0.7  # 30% penalty for very slow
+                response_time_mins <= 60, slow_penalty,
+                very_slow_penalty
             )
         )
     )
     
-    # Rep skill multiplier on close rate
-    rep_skill_effect = rep_skill_values
+    # Vary rep skill effect strength to reduce confounding in some datasets
+    # Sometimes rep skill has strong effect (creates confounding), sometimes weaker
+    rep_skill_strength = np.random.uniform(0.7, 1.0)  # Reduce rep skill impact by up to 30%
+    rep_skill_effect = 1.0 + (rep_skill_values - 1.0) * rep_skill_strength
+    # Add per-lead variation
+    rep_skill_effect = rep_skill_effect * np.random.uniform(0.92, 1.08, n)
     
     # Combined close probability
     close_prob = base_close_rates * response_time_effect * rep_skill_effect
+    
+    # Add substantial random noise to make relationships less deterministic
+    # This simulates other unmeasured factors affecting outcomes
+    # Large noise helps reduce significance when effects are weak
+    noise_factor = np.random.uniform(0.80, 1.20, n)
+    close_prob = close_prob * noise_factor
     
     # Ensure probabilities are in valid range [0, 1]
     close_prob = np.clip(close_prob, 0, 0.95)

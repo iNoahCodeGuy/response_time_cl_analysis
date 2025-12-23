@@ -127,16 +127,70 @@ def run_chi_square_test(
             f"we may just need more data."
         )
     
-    # Package details
+    # Create expected frequencies DataFrame for easier access
+    expected_df = pd.DataFrame(
+        expected,
+        index=contingency.index,
+        columns=contingency.columns
+    )
+    
+    # Calculate contributions per bucket for transparency
+    # (Observed - Expected)² / Expected for each cell
+    contributions = ((contingency - expected_df) ** 2 / expected_df)
+    
+    # Calculate overall close rate
+    overall_rate = df['ordered'].mean()
+    
+    # Calculate the critical value (threshold) at alpha level
+    threshold = stats.chi2.ppf(1 - alpha, dof)
+    
+    # Build detailed worked example for each bucket
+    worked_example_buckets = []
+    for bucket in contingency.index:
+        obs_orders = contingency.loc[bucket, 1] if 1 in contingency.columns else 0
+        obs_no_orders = contingency.loc[bucket, 0] if 0 in contingency.columns else 0
+        exp_orders = expected_df.loc[bucket, 1] if 1 in expected_df.columns else 0
+        exp_no_orders = expected_df.loc[bucket, 0] if 0 in expected_df.columns else 0
+        
+        total_leads = obs_orders + obs_no_orders
+        diff = obs_orders - exp_orders
+        
+        # Contribution from orders cell
+        contrib_orders = contributions.loc[bucket, 1] if 1 in contributions.columns else 0
+        contrib_no_orders = contributions.loc[bucket, 0] if 0 in contributions.columns else 0
+        total_contrib = contrib_orders + contrib_no_orders
+        
+        worked_example_buckets.append({
+            'name': bucket,
+            'observed_orders': int(obs_orders),
+            'observed_no_orders': int(obs_no_orders),
+            'total_leads': int(total_leads),
+            'expected_orders': float(exp_orders),
+            'expected_no_orders': float(exp_no_orders),
+            'difference': float(diff),
+            'contribution': float(total_contrib),
+            'interpretation': (
+                'More sales than expected ↑' if diff > 10
+                else 'Fewer sales than expected ↓' if diff < -10
+                else 'Close to expected'
+            )
+        })
+    
+    # Package details with enhanced worked example
     details = {
         'contingency_table': contingency.to_dict(),
-        'expected_frequencies': pd.DataFrame(
-            expected,
-            index=contingency.index,
-            columns=contingency.columns
-        ).to_dict(),
+        'expected_frequencies': expected_df.to_dict(),
+        'contributions': contributions.to_dict(),
         'n_observations': len(df),
-        'n_buckets': len(contingency)
+        'n_buckets': len(contingency),
+        'worked_example': {
+            'buckets': worked_example_buckets,
+            'overall_rate': overall_rate,
+            'total_leads': len(df),
+            'total_orders': int(df['ordered'].sum()),
+            'threshold': threshold,
+            'times_threshold': chi2 / threshold if threshold > 0 else 0
+        }
     }
     
     return TestResult(

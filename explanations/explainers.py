@@ -436,7 +436,324 @@ def render_percentage_points_explainer() -> None:
 
 
 # =============================================================================
-# CHI-SQUARE WALKTHROUGH
+# STEP BRIDGE SENTENCES
+# =============================================================================
+
+# Bridge sentences to explain why each step follows from the last
+STEP_BRIDGES = {
+    'data_overview': (
+        "Let's start by understanding what we're working with. Before drawing any conclusions, "
+        "we need to know the shape and quality of our data."
+    ),
+    'close_rates': (
+        "Now let's see if faster responses are associated with higher close rates. "
+        "This is the core question we're here to answer."
+    ),
+    'chi_square': (
+        "We saw a pattern in the data. But patterns can appear purely by random chance — "
+        "like flipping heads 6 times in a row. Let's test if this pattern is statistically real..."
+    ),
+    'proportions': (
+        "We've established that *something* is going on. Now let's find exactly *where* "
+        "the biggest gaps are — which response time thresholds matter most?"
+    ),
+    'regression': (
+        "Wait — what if this pattern is just because better leads happen to get faster responses? "
+        "Let's control for lead source and see if the effect holds..."
+    ),
+    'weekly_trends': (
+        "Statistical tests tell us about the overall pattern. But does performance hold steady "
+        "week-over-week, or are there concerning trends?"
+    ),
+    'mixed_effects': (
+        "Different salespeople have different skill levels. Let's account for this and see "
+        "if the response time effect holds within individuals..."
+    ),
+    'within_rep': (
+        "The most rigorous test: when the *same* salesperson responds fast vs. slow, "
+        "do they close more deals? This controls for everything about the person."
+    ),
+    'confounding': (
+        "Before we finalize our conclusions, let's systematically assess how confident we can be "
+        "that response time is truly driving outcomes, not hidden confounders."
+    )
+}
+
+
+def get_step_bridge(step_name: str) -> str:
+    """
+    Get the bridge sentence for a given analysis step.
+    
+    Bridge sentences explain WHY we're doing each step and how it connects
+    to the previous step. This maintains narrative flow for non-technical users.
+    """
+    return STEP_BRIDGES.get(step_name, "")
+
+
+# =============================================================================
+# CHI-SQUARE WORKED EXAMPLE GENERATOR
+# =============================================================================
+
+def generate_chi_square_worked_example(df: pd.DataFrame) -> dict:
+    """
+    Generate a complete worked example of the chi-square calculation using actual data.
+    
+    This function takes the user's actual data and returns all the components needed
+    to show a step-by-step walkthrough of the chi-square calculation:
+    - Observed counts per bucket
+    - Expected counts per bucket (what we'd see if speed didn't matter)
+    - Contribution to chi-square per bucket
+    - Total chi-square and threshold
+    
+    Returns:
+        dict with keys:
+        - 'buckets': list of dicts with per-bucket calculations
+        - 'total_chi_square': float
+        - 'overall_rate': float
+        - 'threshold': float (critical value at alpha=0.05)
+        - 'times_threshold': float (how many times over threshold)
+        - 'p_value': float
+        - 'degrees_of_freedom': int
+    """
+    import numpy as np
+    from scipy import stats
+    
+    # Calculate overall rate
+    overall_rate = df['ordered'].mean()
+    total_leads = len(df)
+    total_orders = df['ordered'].sum()
+    
+    # Get bucket-level data
+    bucket_data = df.groupby('response_bucket').agg({
+        'ordered': ['sum', 'count']
+    }).reset_index()
+    bucket_data.columns = ['bucket', 'observed_orders', 'total_leads']
+    bucket_data['observed_no_orders'] = bucket_data['total_leads'] - bucket_data['observed_orders']
+    
+    # Calculate expected values (what we'd expect if speed didn't matter)
+    bucket_data['expected_orders'] = bucket_data['total_leads'] * overall_rate
+    bucket_data['expected_no_orders'] = bucket_data['total_leads'] * (1 - overall_rate)
+    
+    # Calculate deviation and contribution to chi-square
+    bucket_data['difference'] = bucket_data['observed_orders'] - bucket_data['expected_orders']
+    bucket_data['contribution_orders'] = (
+        (bucket_data['observed_orders'] - bucket_data['expected_orders']) ** 2 
+        / bucket_data['expected_orders']
+    )
+    bucket_data['contribution_no_orders'] = (
+        (bucket_data['observed_no_orders'] - bucket_data['expected_no_orders']) ** 2 
+        / bucket_data['expected_no_orders']
+    )
+    bucket_data['total_contribution'] = bucket_data['contribution_orders'] + bucket_data['contribution_no_orders']
+    
+    # Build the bucket list
+    buckets = []
+    for _, row in bucket_data.iterrows():
+        buckets.append({
+            'name': row['bucket'],
+            'observed_orders': int(row['observed_orders']),
+            'observed_no_orders': int(row['observed_no_orders']),
+            'total_leads': int(row['total_leads']),
+            'expected_orders': float(row['expected_orders']),
+            'expected_no_orders': float(row['expected_no_orders']),
+            'difference': float(row['difference']),
+            'contribution': float(row['total_contribution']),
+            'interpretation': (
+                'More sales than expected ↑' if row['difference'] > 10
+                else 'Fewer sales than expected ↓' if row['difference'] < -10
+                else 'Close to expected'
+            )
+        })
+    
+    # Calculate total chi-square
+    total_chi_square = bucket_data['total_contribution'].sum()
+    
+    # Degrees of freedom = (rows - 1) * (cols - 1) = (n_buckets - 1) * (2 - 1) = n_buckets - 1
+    degrees_of_freedom = len(bucket_data) - 1
+    
+    # Critical value at alpha = 0.05
+    threshold = stats.chi2.ppf(0.95, degrees_of_freedom)
+    
+    # P-value
+    p_value = 1 - stats.chi2.cdf(total_chi_square, degrees_of_freedom)
+    
+    return {
+        'buckets': buckets,
+        'total_chi_square': total_chi_square,
+        'overall_rate': overall_rate,
+        'total_leads': total_leads,
+        'total_orders': int(total_orders),
+        'threshold': threshold,
+        'times_threshold': total_chi_square / threshold if threshold > 0 else 0,
+        'p_value': p_value,
+        'degrees_of_freedom': degrees_of_freedom
+    }
+
+
+def render_chi_square_worked_example(worked_example: dict) -> None:
+    """
+    Render a visible, step-by-step chi-square calculation using the user's actual data.
+    
+    This is NOT hidden in an expander - it's meant to be the primary explanation
+    that shows users exactly how their numbers produce the statistical result.
+    """
+    st.markdown("### Let's Verify This With Your Data")
+    
+    st.markdown("""
+    The chi-square test asks: *"Is the pattern in our data too strong to be random chance?"*
+    
+    Let's walk through the calculation using your actual numbers.
+    """)
+    
+    # Step 1: What actually happened
+    st.markdown("#### Step 1: What actually happened in your data?")
+    
+    fastest = worked_example['buckets'][0]
+    slowest = worked_example['buckets'][-1]
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown(f"""
+        **Your fastest responders ({fastest['name']})**
+        - Leads: **{fastest['total_leads']:,}**
+        - Closed: **{fastest['observed_orders']:,}**
+        - Close rate: **{fastest['observed_orders']:,} ÷ {fastest['total_leads']:,} = {fastest['observed_orders']/fastest['total_leads']*100:.1f}%**
+        """)
+    
+    with col2:
+        st.markdown(f"""
+        **Your slowest responders ({slowest['name']})**
+        - Leads: **{slowest['total_leads']:,}**
+        - Closed: **{slowest['observed_orders']:,}**
+        - Close rate: **{slowest['observed_orders']:,} ÷ {slowest['total_leads']:,} = {slowest['observed_orders']/slowest['total_leads']*100:.1f}%**
+        """)
+    
+    # Step 2: What would we expect if speed didn't matter?
+    st.markdown("#### Step 2: What would we expect if speed didn't matter?")
+    
+    st.markdown(f"""
+    If response time had **no effect**, every bucket would close at the overall average rate:
+    
+    **Overall close rate:** {worked_example['total_orders']:,} ÷ {worked_example['total_leads']:,} = **{worked_example['overall_rate']*100:.1f}%**
+    
+    So if speed didn't matter:
+    - {fastest['name']} should have: {fastest['total_leads']:,} × {worked_example['overall_rate']*100:.1f}% = **{fastest['expected_orders']:.0f} sales** (not {fastest['observed_orders']:,})
+    - {slowest['name']} should have: {slowest['total_leads']:,} × {worked_example['overall_rate']*100:.1f}% = **{slowest['expected_orders']:.0f} sales** (not {slowest['observed_orders']:,})
+    """)
+    
+    # Step 3: Show the full calculation table
+    st.markdown("#### Step 3: Measure the 'surprise' in each bucket")
+    
+    st.markdown("""
+    For each bucket, we calculate: How far is reality from what we'd expect by chance?
+    
+    The formula is: **(Observed - Expected)² ÷ Expected**
+    """)
+    
+    import pandas as pd
+    calc_rows = []
+    for bucket in worked_example['buckets']:
+        calc_rows.append({
+            'Response Time': bucket['name'],
+            'Observed Sales': f"{bucket['observed_orders']:,}",
+            'Expected Sales': f"{bucket['expected_orders']:.0f}",
+            'Difference': f"{bucket['difference']:+.0f}",
+            'Surprise Score': f"{bucket['contribution']:.2f}",
+            '': bucket['interpretation']
+        })
+    
+    st.dataframe(pd.DataFrame(calc_rows), use_container_width=True, hide_index=True)
+    
+    # Step 4: The verdict
+    st.markdown("#### Step 4: Add up the total surprise")
+    
+    # Show the sum
+    contribution_parts = " + ".join([f"{b['contribution']:.2f}" for b in worked_example['buckets']])
+    
+    st.markdown(f"""
+    **Total surprise score (χ²):** {contribution_parts} = **{worked_example['total_chi_square']:.2f}**
+    """)
+    
+    # Compare to threshold
+    p_exp = get_p_value_explanation(worked_example['p_value'])
+    
+    if worked_example['total_chi_square'] > worked_example['threshold']:
+        st.success(f"""
+        **The Verdict:**
+        
+        - Your surprise score: **{worked_example['total_chi_square']:.2f}**
+        - Threshold for "too surprising to be random" (at 95% confidence): **{worked_example['threshold']:.2f}**
+        - Your score is **{worked_example['times_threshold']:.1f}× higher** than the threshold
+        
+        ✅ **Conclusion: This pattern is almost certainly real, not random luck.**
+        
+        The probability of seeing a pattern this strong by pure chance is {p_exp['luck_chance']}.
+        """)
+    else:
+        st.warning(f"""
+        **The Verdict:**
+        
+        - Your surprise score: **{worked_example['total_chi_square']:.2f}**
+        - Threshold for "too surprising to be random" (at 95% confidence): **{worked_example['threshold']:.2f}**
+        
+        ⚠️ **Conclusion: We cannot rule out that this pattern is random variation.**
+        
+        The data does not provide strong enough evidence to conclude that response time matters.
+        """)
+
+
+def generate_proportion_test_worked_example(
+    fast_bucket: str,
+    slow_bucket: str, 
+    fast_sales: int,
+    fast_leads: int,
+    slow_sales: int,
+    slow_leads: int,
+    z_stat: float,
+    p_value: float
+) -> dict:
+    """
+    Generate a worked example for the z-test comparing two proportions.
+    
+    This shows the user exactly how we calculated whether one group
+    is significantly better than another.
+    """
+    import numpy as np
+    
+    fast_rate = fast_sales / fast_leads if fast_leads > 0 else 0
+    slow_rate = slow_sales / slow_leads if slow_leads > 0 else 0
+    
+    # Calculate pooled proportion (used in z-test)
+    pooled = (fast_sales + slow_sales) / (fast_leads + slow_leads)
+    
+    # Calculate standard error
+    se = np.sqrt(pooled * (1 - pooled) * (1/fast_leads + 1/slow_leads))
+    
+    # Calculate the difference
+    diff = fast_rate - slow_rate
+    diff_pp = diff * 100
+    
+    return {
+        'fast_bucket': fast_bucket,
+        'slow_bucket': slow_bucket,
+        'fast_sales': fast_sales,
+        'fast_leads': fast_leads,
+        'slow_sales': slow_sales,
+        'slow_leads': slow_leads,
+        'fast_rate': fast_rate,
+        'slow_rate': slow_rate,
+        'diff': diff,
+        'diff_pp': diff_pp,
+        'pooled_rate': pooled,
+        'standard_error': se,
+        'z_stat': z_stat,
+        'p_value': p_value,
+        'is_significant': p_value < 0.05
+    }
+
+
+# =============================================================================
+# CHI-SQUARE WALKTHROUGH (LEGACY - kept for compatibility)
 # =============================================================================
 
 def render_chi_square_walkthrough(
