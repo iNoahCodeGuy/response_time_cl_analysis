@@ -100,20 +100,6 @@ ANALYSIS_MODES = {
             'logistic_regression'
         ],
         'icon': '📊'
-    },
-    'advanced': {
-        'name': 'Advanced Analysis',
-        'description': 'Deep dive with controls for sales rep effects',
-        'tests': [
-            'descriptive_stats',
-            'chi_square',
-            'z_test_proportions',
-            'logistic_regression',
-            'mixed_effects',
-            'within_rep_analysis',
-            'propensity_summary'
-        ],
-        'icon': '🔬'
     }
 }
 

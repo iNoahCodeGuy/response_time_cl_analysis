@@ -403,13 +403,6 @@ def preprocess_data(
     }
     all_diagnostics['warnings'] = all_warnings
     
-    # #region agent log
-    import json
-    log_path = "/Users/noahdelacalzada/response_time_cl_investigation/debug.log"
-    with open(log_path, "a") as f:
-        f.write(json.dumps({"location": "preprocessing.py:preprocess_data_end", "message": "preprocessing complete", "data": {"n_rows": len(result), "ordered_dtype": str(result['ordered'].dtype), "ordered_sum": int(result['ordered'].sum()), "ordered_mean": float(result['ordered'].mean()), "ordered_sample": result['ordered'].head(20).tolist()}, "hypothesisId": "E", "timestamp": __import__("time").time()}) + "\n")
-    # #endregion
-    
     return result, all_diagnostics
 
 

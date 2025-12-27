@@ -25,7 +25,6 @@ import os
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config.settings import (
-    ANALYSIS_MODES, 
     DEFAULT_BUCKETS, 
     DEFAULT_BUCKET_LABELS,
     BUCKET_PRESETS,
@@ -89,49 +88,15 @@ def render_settings_panel() -> Dict[str, Any]:
     EXAMPLE:
     --------
     >>> settings = render_settings_panel()
-    >>> if settings['analysis_mode'] == 'advanced':
-    ...     run_advanced_analysis()
+    >>> print(f"Using {len(settings['bucket_labels'])} response time buckets")
     """
     # Initialize settings if needed
     initialize_settings()
     
     st.sidebar.title("⚙️ Settings")
     
-    # =========================================================================
-    # SECTION 1: Analysis Mode
-    # =========================================================================
-    st.sidebar.header("Analysis Mode")
-    
-    # Create nice cards for each mode
-    mode_options = list(ANALYSIS_MODES.keys())
-    mode_labels = [
-        f"{ANALYSIS_MODES[m]['icon']} {ANALYSIS_MODES[m]['name']}" 
-        for m in mode_options
-    ]
-    
-    selected_index = mode_options.index(st.session_state.analysis_mode)
-    
-    selected_mode = st.sidebar.radio(
-        "Choose analysis depth:",
-        options=mode_options,
-        format_func=lambda x: f"{ANALYSIS_MODES[x]['icon']} {ANALYSIS_MODES[x]['name']}",
-        index=selected_index,
-        help="Standard mode covers essential tests. Advanced mode adds controls for sales rep effects."
-    )
-    
-    st.session_state.analysis_mode = selected_mode
-    
-    # Show description of selected mode
-    mode_info = ANALYSIS_MODES[selected_mode]
-    st.sidebar.caption(mode_info['description'])
-    
-    # Show what tests are included
-    with st.sidebar.expander("Tests included in this mode"):
-        for test in mode_info['tests']:
-            test_name = test.replace('_', ' ').title()
-            st.write(f"• {test_name}")
-    
-    st.sidebar.divider()
+    # Analysis mode is always standard now, no need for user selection
+    st.session_state.analysis_mode = 'standard'
     
     # =========================================================================
     # SECTION 2: Response Time Buckets
@@ -305,19 +270,14 @@ def render_settings_summary() -> None:
     """
     settings = get_current_settings()
     
-    mode = ANALYSIS_MODES[settings['analysis_mode']]
-    
-    cols = st.columns(4)
+    cols = st.columns(3)
     
     with cols[0]:
-        st.metric("Analysis Mode", mode['name'])
-    
-    with cols[1]:
         st.metric("Response Buckets", len(settings['bucket_labels']))
     
-    with cols[2]:
+    with cols[1]:
         st.metric("Significance Level", f"{settings['alpha_level']:.0%}")
     
-    with cols[3]:
+    with cols[2]:
         st.metric("Confidence Level", f"{settings['confidence_level']:.0%}")
 

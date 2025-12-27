@@ -438,7 +438,7 @@ def display_limitations_section() -> None:
         **1. Causation vs Correlation**
         - This is observational data, not a controlled experiment
         - We can identify associations, but proving causation requires more
-        - Consider running an A/B test for definitive causal claims
+        - This analysis has limitations in establishing causation
         
         **2. Unmeasured Confounders**
         - We control for lead source and (optionally) sales rep
@@ -457,7 +457,7 @@ def display_limitations_section() -> None:
         
         ### Recommendations for Stronger Conclusions
         
-        1. **Run an A/B test**: Randomly vary response times
+        1. **Acknowledge limitations**: This observational analysis cannot definitively establish causation
         2. **Collect more covariates**: Time of day, lead score, etc.
         3. **Replicate over time**: See if effects are consistent
         4. **Check for dose-response**: Does faster = better continuously?

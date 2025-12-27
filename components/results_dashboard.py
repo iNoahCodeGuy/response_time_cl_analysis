@@ -38,13 +38,14 @@ from components.charts import (
 from analysis.descriptive import calculate_close_rates, calculate_rep_performance
 from analysis.statistical_tests import run_all_statistical_tests
 from analysis.regression import run_logistic_regression, get_model_summary_table
-from analysis.advanced import run_all_advanced_analyses
 from analysis.weekly_trends import (
     analyze_weekly_trends, 
     format_weekly_stats_for_display,
-    get_wow_comparison
+    get_wow_comparison,
+    get_available_weeks,
+    run_weekly_statistical_analysis,
+    compare_two_weeks
 )
-from config.settings import ANALYSIS_MODES
 from explanations.explainers import (
     get_p_value_explanation,
     render_p_value_explainer,
@@ -59,13 +60,39 @@ from explanations.explainers import (
     render_bucket_sample_sizes,
     render_key_finding,
     format_wow_change,
-    render_mixed_effects_explainer,
-    render_within_rep_explainer,
-    render_confounding_explainer,
     get_step_bridge,
     generate_chi_square_worked_example,
     render_chi_square_worked_example,
-    generate_proportion_test_worked_example
+    generate_proportion_test_worked_example,
+    generate_week_analysis_story,
+    generate_week_comparison_story,
+    get_week_educational_context,
+    render_week_analysis_educational_intro,
+    generate_weekly_chi_square_worked_example,
+    render_weekly_chi_square_worked_example,
+    render_weekly_close_rate_calculations,
+    render_weekly_proportion_test_calculations
+)
+from explanations.verification_panels import (
+    render_chi_square_verification,
+    render_z_test_verification,
+    render_regression_verification,
+    render_effect_size_verification,
+    render_ci_verification,
+    render_bucketing_verification
+)
+from data.export import create_verification_csv
+from explanations.common import (
+    detect_non_monotonic_pattern,
+    render_non_monotonic_pattern_explanation,
+    render_minimal_sample_warning,
+    render_ci_significance_contradiction,
+    render_interaction_effect_explanation,
+    detect_imbalance,
+    render_imbalance_warning,
+    render_no_controls_explanation,
+    render_extreme_rate_guidance,
+    detect_narrative_scenario
 )
 
 
@@ -99,8 +126,7 @@ def render_results_dashboard(
     """
     st.header("📊 Analysis Results")
     
-    # Get analysis mode
-    analysis_mode = settings.get('analysis_mode', 'standard')
+    # Get settings
     show_math = settings.get('show_math', True)
     alpha = settings.get('alpha_level', 0.05)
     
@@ -125,17 +151,42 @@ def render_results_dashboard(
             except Exception as e:
                 # Don't fail if weekly analysis can't run
                 st.warning(f"Could not run weekly analysis: {e}")
-        
-        # Advanced (if selected)
-        if analysis_mode == 'advanced':
-            advanced_results = run_all_advanced_analyses(df, alpha)
-        else:
-            advanced_results = None
+    
+    # =========================================================================
+    # DETECT NARRATIVE SCENARIO
+    # =========================================================================
+    # Detect what type of story we're telling to adapt narrative accordingly
+    narrative_scenario = detect_narrative_scenario(
+        close_rates, 
+        stat_results['chi_square'], 
+        regression_result,
+        p_value=stat_results['chi_square'].p_value
+    )
+    
+    # If non-monotonic pattern, introduce it early
+    if narrative_scenario.get('is_non_monotonic'):
+        pattern_info = narrative_scenario.get('pattern_info', {})
+        if pattern_info.get('pattern_type') == 'inverted_u':
+            st.info(f"""
+            **🔍 Special Pattern Detected: Optimal Response Window**
+            
+            Your data reveals a non-linear relationship: **{pattern_info.get('peak_bucket', 'middle buckets')}** 
+            performs best, rather than "faster is always better." This suggests there may be an optimal 
+            response time window. See the detailed analysis below for more insights.
+            """)
+        elif pattern_info.get('pattern_type') == 'u_shaped':
+            st.warning(f"""
+            **🔍 Special Pattern Detected: Suboptimal Middle Ground**
+            
+            Your data shows a U-shaped pattern where both very fast and very slow responses outperform 
+            medium-speed responses. This suggests medium response times represent a "worst of both worlds" 
+            scenario. See the detailed analysis below for more insights.
+            """)
     
     # =========================================================================
     # EXECUTIVE SUMMARY
     # =========================================================================
-    render_executive_summary(close_rates, stat_results, regression_result, advanced_results)
+    render_executive_summary(close_rates, stat_results, regression_result)
     
     # =========================================================================
     # YOUR QUESTIONS ANSWERED - Direct answers with actual data
@@ -149,16 +200,10 @@ def render_results_dashboard(
     st.markdown("---")
     st.subheader("📈 Detailed Analysis")
     
-    # Define steps based on analysis mode
-    # Always include Weekly Trends if we have date data
-    base_steps = ['Data Overview', 'Close Rates', 'Chi-Square', 'Proportions', 'Regression']
+    # Define steps - always include Weekly Trends if we have date data
+    step_names = ['Data Overview', 'Close Rates', 'Chi-Square', 'Proportions', 'Regression']
     if weekly_analysis:
-        base_steps.append('📅 Weekly Trends')
-    
-    if analysis_mode == 'standard':
-        step_names = base_steps
-    else:
-        step_names = base_steps + ['Mixed Effects', 'Within-Rep', 'Confounding']
+        step_names.append('📅 Weekly Trends')
     
     # Create tabs for each step
     tabs = st.tabs(step_names)
@@ -181,25 +226,12 @@ def render_results_dashboard(
     
     # Step 5: Regression
     with tabs[4]:
-        render_regression_step(regression_result, show_math)
+        render_regression_step(df, regression_result, show_math)
     
     # Step 6: Weekly Trends (if available)
-    current_tab = 5
     if weekly_analysis:
-        with tabs[current_tab]:
-            render_weekly_trends_step(weekly_analysis)
-        current_tab += 1
-    
-    # Advanced steps
-    if analysis_mode == 'advanced' and advanced_results:
-        with tabs[current_tab]:
-            render_mixed_effects_step(advanced_results.get('mixed_effects'), show_math)
-        
-        with tabs[current_tab + 1]:
-            render_within_rep_step(advanced_results.get('within_rep'), df, show_math)
-        
-        with tabs[current_tab + 2]:
-            render_confounding_step(advanced_results.get('confounding'), df)
+        with tabs[5]:
+            render_weekly_trends_step(weekly_analysis, df)
     
     # =========================================================================
     # EXPORT OPTIONS
@@ -211,8 +243,7 @@ def render_results_dashboard(
 def render_executive_summary(
     close_rates: pd.DataFrame,
     stat_results: Dict[str, Any],
-    regression_result,
-    advanced_results: Optional[Dict[str, Any]]
+    regression_result
 ) -> None:
     """
     Render the executive summary using methodical, first-principles reasoning.
@@ -232,37 +263,102 @@ def render_executive_summary(
     # =========================================================================
     # THE CENTRAL QUESTION AND CONCLUSION
     # =========================================================================
+    # Detect scenario for adaptive opening
+    is_reverse = rate_diff < 0
+    abs_rate_diff = abs(rate_diff)
+    is_exceptional = (p_value < 0.0001 and abs_rate_diff > 5) or abs_rate_diff > 10
+    
     st.markdown("### The Central Question")
     
-    st.markdown("""
-    This analysis addresses a fundamental business question: **Does responding faster 
-    to leads cause higher conversion rates?**
-    
-    The answer to this question has direct operational implications. If speed causes 
-    success, investments in response time infrastructure will yield measurable returns. 
-    If the correlation is spurious, such investments would be misdirected.
-    """)
+    # Adapt opening hook based on scenario
+    if is_reverse and chi_sq.is_significant:
+        st.markdown("""
+        This analysis addresses a fundamental business question: **Does responding faster 
+        to leads cause higher conversion rates?**
+        
+        **⚠️ Unexpected Finding:** Your data suggests something surprising — the relationship 
+        between response time and conversion may not follow conventional wisdom. This analysis 
+        will help you understand what your data is actually saying.
+        """)
+    elif is_exceptional and chi_sq.is_significant:
+        st.markdown("""
+        This analysis addresses a fundamental business question: **Does responding faster 
+        to leads cause higher conversion rates?**
+        
+        **🚀 Strong Signal Detected:** Your data shows an unusually powerful pattern that 
+        could have significant business implications. This analysis will explore whether 
+        this effect is real and actionable.
+        """)
+    elif not chi_sq.is_significant:
+        st.markdown("""
+        This analysis addresses a fundamental business question: **Does responding faster 
+        to leads cause higher conversion rates?**
+        
+        **📊 Data-Driven Investigation:** Your data may or may not show a clear relationship. 
+        This analysis will help you understand what conclusions you can reliably draw and 
+        what remains uncertain.
+        """)
+    else:
+        st.markdown("""
+        This analysis addresses a fundamental business question: **Does responding faster 
+        to leads cause higher conversion rates?**
+        
+        The answer to this question has direct operational implications. If speed causes 
+        success, investments in response time infrastructure will yield measurable returns. 
+        If the correlation is spurious, such investments would be misdirected.
+        """)
     
     st.markdown("---")
     st.markdown("### The Conclusion")
     
+    # Detect scenario type for adaptive narrative
+    is_reverse = rate_diff < 0
+    abs_rate_diff = abs(rate_diff)
+    is_exceptional = (p_value < 0.0001 and abs_rate_diff > 5) or abs_rate_diff > 10
+    
     if chi_sq.is_significant and regression_result.is_response_time_significant:
-        st.success(f"""
-        **The evidence demonstrates a statistically significant association between response speed and conversion.**
+        # Adapt opening based on effect size
+        if is_exceptional and not is_reverse:
+            opening = f"""
+            **🚀 Exceptional Finding: Response Speed Shows Dramatic Impact**
+            
+            Your data reveals an unusually strong association between response speed and conversion — 
+            one of the strongest effects observed in response time analysis.
+            """
+            tone = "success"
+        elif is_reverse:
+            opening = f"""
+            **⚠️ Surprising Finding: Conventional Wisdom Challenged**
+            
+            Your data shows a counterintuitive pattern: slower responses are associated with higher 
+            conversion rates. This contradicts expected behavior and requires careful investigation.
+            """
+            tone = "warning"
+        else:
+            opening = f"""
+            **The evidence demonstrates a statistically significant association between response speed and conversion.**
+            """
+            tone = "success"
         
+        if tone == "success":
+            st.success(opening)
+        else:
+            st.warning(opening)
+        
+        st.markdown(f"""
         Leads receiving responses within **{fastest_bucket['bucket']}** convert at 
-        **{fastest_bucket['close_rate']*100:.1f}%** — a rate **{rate_multiplier:.1f}× higher** than 
+        **{fastest_bucket['close_rate']*100:.1f}%** — a rate **{rate_multiplier:.1f}× {'higher' if not is_reverse else 'lower'}** than 
         leads waiting **{slowest_bucket['bucket']}** ({slowest_bucket['close_rate']*100:.1f}%).
         
         This pattern is:
         - **Statistically significant** — the probability of observing this by chance is {p_exp['luck_chance']}
         - **Robust to observed confounders** — the association persists after controlling for lead source
-        - **Practically meaningful** — a {rate_diff*100:.1f} percentage point difference translates 
+        - **Practically meaningful** — a {abs_rate_diff*100:.1f} percentage point difference translates 
           to substantial revenue impact at scale
         
-        **Recommendation:** Before committing to major investments, run a randomized controlled experiment 
-        (A/B test) to establish causation definitively. While the observational evidence is strong, 
-        only experimental validation can confirm that faster responses *cause* higher conversion rates.
+        **Recommendation:** While the observational evidence is strong, this analysis cannot definitively 
+        establish causation. The association could be explained by unmeasured confounders or selection mechanisms. 
+        Consider this evidence when making decisions, but acknowledge the limitations of observational data.
         """)
     elif chi_sq.is_significant and not regression_result.is_response_time_significant:
         st.warning(f"""
@@ -276,8 +372,8 @@ def render_executive_summary(
         confounding may explain part of the correlation — different lead types may receive 
         different response times *and* have different conversion rates, independent of speed.
         
-        **Recommendation:** Before making major investments, consider running a controlled 
-        experiment (A/B test) to establish causation definitively.
+        **Recommendation:** This observational analysis cannot definitively establish causation. 
+        Consider the evidence when making decisions, but acknowledge that confounding may explain the relationship.
         """)
     else:
         st.info(f"""
@@ -366,7 +462,7 @@ def render_executive_summary(
         
         ### The Confounding Check
         
-        {"**Association persists after controlling for lead source.** We tested whether lead source differences could explain this pattern. The association between response speed and conversion remains after controlling for lead source. However, this only addresses *one* potential confounder. Unmeasured confounders (such as lead quality signals that drive prioritization, salesperson skill differences, or time-of-day effects) may still explain the relationship. Only a randomized experiment can definitively establish causation." if regression_result.is_response_time_significant else "**Caution warranted.** When we control for lead source, the association weakens. Some of the apparent relationship may be attributable to confounding rather than a true causal mechanism. A controlled experiment would provide more definitive evidence."}
+        {"**Association persists after controlling for lead source.** We tested whether lead source differences could explain this pattern. The association between response speed and conversion remains after controlling for lead source. However, this only addresses *one* potential confounder. Unmeasured confounders (such as lead quality signals that drive prioritization, salesperson skill differences, or time-of-day effects) may still explain the relationship. This observational analysis cannot definitively establish causation." if regression_result.is_response_time_significant else "**Caution warranted.** When we control for lead source, the association weakens. Some of the apparent relationship may be attributable to confounding rather than a true causal mechanism. This observational analysis has limitations in establishing causation."}
         
         ### Causal Inference Limitations
         
@@ -378,53 +474,8 @@ def render_executive_summary(
         
         **What we can conclude:** There is a statistically significant association between response time and conversion rates that persists after controlling for lead source. This is consistent with a causal effect, but observational data alone cannot prove it.
         
-        **Recommended next step:** Before making major staffing or infrastructure investments, conduct a randomized controlled experiment (A/B test) where leads are randomly assigned to response time conditions, independent of lead characteristics.
+        **Limitation:** This observational analysis cannot definitively establish causation. When making decisions about staffing or infrastructure investments, consider this evidence while acknowledging that unmeasured confounders may explain the relationship.
         """)
-    
-    # =========================================================================
-    # ADVANCED ANALYSIS FINDINGS (if applicable)
-    # =========================================================================
-    if advanced_results:
-        st.markdown("---")
-        st.markdown("### Advanced Analysis Findings")
-        
-        within_rep = advanced_results.get('within_rep')
-        mixed_effects = advanced_results.get('mixed_effects')
-        
-        # Within-rep findings
-        if within_rep and hasattr(within_rep, 'statistics'):
-            within_p = within_rep.statistics.get('p_value', 1)
-            if within_p < 0.05:
-                st.success("""
-                **Within-Person Analysis: Causal Evidence Strengthened**
-                
-                The most rigorous test available — comparing each salesperson to themselves — 
-                confirms the effect. When individual representatives respond quickly, they 
-                convert at higher rates than when those same individuals respond slowly.
-                
-                This finding is particularly important because it controls for all fixed 
-                characteristics of the salesperson. The effect cannot be attributed to 
-                better salespeople simply being faster; speed itself appears to matter.
-                """)
-            else:
-                st.warning("""
-                **Within-Person Analysis: Results Inconclusive**
-                
-                When we compare each salesperson to themselves, the effect of response 
-                time becomes non-significant. This suggests that between-person differences 
-                may explain some of the observed correlation.
-                """)
-        
-        # Mixed effects findings
-        if mixed_effects and hasattr(mixed_effects, 'statistics'):
-            icc = mixed_effects.statistics.get('icc', 0)
-            if icc > 0.15:
-                st.info(f"""
-                **Representative-Level Variation: {icc*100:.1f}% of outcome variation is between salespeople**
-                
-                This substantial clustering means that controlling for salesperson identity 
-                is important for accurate inference. The mixed effects model accounts for this.
-                """)
 
 
 def render_questions_answered(
@@ -489,7 +540,56 @@ def render_questions_answered(
     st.markdown("---")
     st.markdown("### Q: Is it beneficial to reach out within 15 minutes?")
     
-    if chi_sq.is_significant and rate_diff > 0:
+    # Detect reverse effect
+    is_reverse = rate_diff < 0
+    abs_rate_diff = abs(rate_diff)
+    
+    # Handle reverse effect scenario
+    if chi_sq.is_significant and is_reverse and abs_rate_diff > 0.02:
+        st.warning(f"""
+        **A: Surprisingly, the data suggests slower responses may be better.**
+        
+        ⚠️ **This is a counterintuitive finding** that contradicts conventional wisdom. 
+        Your data shows that leads receiving slower responses ({slowest['bucket']}) actually 
+        convert at a **higher rate** ({slow_rate*100:.1f}%) than faster responses 
+        ({fast_rate*100:.1f}%).
+        """)
+        
+        st.markdown("#### Here's what your data shows:")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown(f"**Fastest responses ({fastest['bucket']})**")
+            st.markdown(f"""
+            - Sales: **{fast_sales:,}**
+            - Leads: **{fast_leads:,}**
+            - Close rate: **{fast_rate*100:.1f}%**
+            """)
+        
+        with col2:
+            st.markdown(f"**Slowest responses ({slowest['bucket']})**")
+            st.markdown(f"""
+            - Sales: **{slow_sales:,}**
+            - Leads: **{slow_leads:,}**
+            - Close rate: **{slow_rate*100:.1f}%**
+            """)
+        
+        with col3:
+            st.markdown("**The Surprising Difference**")
+            st.markdown(f"""
+            - Gap: **{abs_rate_diff*100:.1f} percentage points**
+            - Slower is **{slow_rate/fast_rate:.1f}× better** (unexpected!)
+            - Confidence: **{p_exp['confidence']}**
+            """)
+        
+        st.warning("""
+        ⚠️ **Important:** This finding requires careful investigation before acting. The pattern 
+        may be due to confounding (e.g., better leads get slower but more thoughtful responses) 
+        rather than speed itself. Do NOT slow down responses based on this alone.
+        """)
+    
+    elif chi_sq.is_significant and rate_diff > 0:
         st.success(f"""
         **A: Yes.** Your data shows a clear benefit to faster response.
         """)
@@ -706,9 +806,19 @@ def render_data_overview_step(df: pd.DataFrame, close_rates: pd.DataFrame) -> No
         st.metric("Analysis Categories", len(close_rates))
         st.caption("Response time groups")
     
+    # Check for extreme conversion rates
+    if overall_rate > 0.90 or overall_rate < 0.05:
+        st.markdown("---")
+        render_extreme_rate_guidance(overall_rate, len(df))
+    
     # Data quality assessment
     st.markdown("---")
     render_sample_size_guidance(len(df), "conversion rate")
+    
+    # =========================================================================
+    # VERIFICATION PANEL - Bucketing
+    # =========================================================================
+    render_bucketing_verification(df)
     
     # Distribution analysis
     st.markdown("---")
@@ -761,6 +871,18 @@ def render_data_overview_step(df: pd.DataFrame, close_rates: pd.DataFrame) -> No
     
     # Show data quality by bucket
     render_bucket_sample_sizes(close_rates)
+    
+    # Check for minimal sample sizes and warn if needed
+    min_sample = close_rates['n_leads'].min()
+    if min_sample < 10:
+        st.markdown("---")
+        render_minimal_sample_warning(int(min_sample), "one or more response time buckets")
+    
+    # Check for imbalanced bucket distributions
+    imbalance_info = detect_imbalance(close_rates)
+    if imbalance_info.get('is_imbalanced'):
+        st.markdown("---")
+        render_imbalance_warning(imbalance_info)
 
 
 def render_close_rates_step(df: pd.DataFrame, close_rates: pd.DataFrame, show_math: bool) -> None:
@@ -787,8 +909,28 @@ def render_close_rates_step(df: pd.DataFrame, close_rates: pd.DataFrame, show_ma
     - **Small lines on top** = Uncertainty range (the true rate is probably within this range)
     """)
     
+    # Detect and explain non-monotonic patterns (U-shaped, inverted-U, etc.)
+    pattern_info = detect_non_monotonic_pattern(close_rates)
+    if pattern_info.get('is_non_monotonic'):
+        st.markdown("---")
+        render_non_monotonic_pattern_explanation(pattern_info)
+    
     # CI Explainer
     render_ci_explainer()
+    
+    # =========================================================================
+    # VERIFICATION PANELS - Confidence Intervals
+    # =========================================================================
+    # Show verification for first bucket as example
+    if len(close_rates) > 0 and 'ci_lower' in close_rates.columns:
+        first_bucket = close_rates.iloc[0]
+        render_ci_verification(
+            n=int(first_bucket['n_leads']),
+            p=first_bucket['close_rate'],
+            ci_lower=first_bucket['ci_lower'],
+            ci_upper=first_bucket['ci_upper'],
+            confidence_level=0.95
+        )
     
     # Data table with human-friendly columns
     with st.expander("📊 View Detailed Data Table"):
@@ -907,6 +1049,54 @@ def render_chi_square_step(df: pd.DataFrame, stat_results: Dict[str, Any], show_
         """)
     
     # =========================================================================
+    # SAMPLE INPUT DATA - Show actual data rows used in chi-square test
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("## 📊 Sample Input Data")
+    
+    st.markdown("""
+    Below are sample rows from your actual data that were used in the chi-square test.
+    This shows the raw values before they're aggregated into the contingency table.
+    """)
+    
+    # Show sample rows if we have the required columns
+    if 'response_bucket' in df.columns and 'ordered' in df.columns:
+        chi_square_df = df[['response_bucket', 'ordered']].dropna()
+        
+        if len(chi_square_df) > 0:
+            # Show sample rows
+            sample_size = min(10, len(chi_square_df))
+            sample_df = chi_square_df.head(sample_size).copy()
+            
+            # Make it more readable
+            display_sample = sample_df.copy()
+            display_sample['Ordered'] = display_sample['ordered'].apply(lambda x: 'Yes' if x == 1 else 'No')
+            display_sample = display_sample[['response_bucket', 'Ordered']]
+            display_sample.columns = ['Response Time Bucket', 'Ordered?']
+            
+            st.dataframe(display_sample, use_container_width=True, hide_index=True)
+            
+            st.caption(f"""
+            Showing {sample_size} of {len(chi_square_df):,} total rows used in the chi-square test.
+            """)
+            
+            # Show how this data becomes the contingency table
+            st.markdown("#### How This Data Becomes the Contingency Table")
+            st.markdown("""
+            The chi-square test groups these individual rows into a contingency table by counting 
+            how many leads in each response time bucket resulted in orders vs. no orders.
+            """)
+            
+            # Show a small example of the grouping
+            example_grouped = chi_square_df.head(20).groupby(['response_bucket', 'ordered']).size().reset_index(name='Count')
+            example_grouped['Ordered'] = example_grouped['ordered'].apply(lambda x: 'Yes' if x == 1 else 'No')
+            example_grouped = example_grouped[['response_bucket', 'Ordered', 'Count']]
+            example_grouped.columns = ['Response Time Bucket', 'Ordered?', 'Count (in first 20 rows)']
+            
+            st.dataframe(example_grouped, use_container_width=True, hide_index=True)
+            st.caption("Example: How the first 20 rows are grouped. The full contingency table uses all rows.")
+    
+    # =========================================================================
     # VISIBLE WORKED EXAMPLE - Show the calculation with actual data
     # =========================================================================
     st.markdown("---")
@@ -914,6 +1104,364 @@ def render_chi_square_step(df: pd.DataFrame, stat_results: Dict[str, Any], show_
     # Generate and display the worked example using actual data
     worked_example = generate_chi_square_worked_example(df)
     render_chi_square_worked_example(worked_example)
+    
+    # =========================================================================
+    # VERIFICATION PANEL - Chi-Square
+    # =========================================================================
+    render_chi_square_verification(df, chi_sq)
+    
+    # =========================================================================
+    # COMPLETE DATA TABLES - Show all raw data used in the test
+    # =========================================================================
+    # #region agent log
+    import json
+    import time as time_module
+    log_path = "/Users/noahdelacalzada/response_time_cl_investigation/debug.log"
+    # #endregion
+    
+    st.markdown("---")
+    st.markdown("### 📊 Complete Data Tables Used in This Test")
+    
+    st.markdown("""
+    Below are the complete data tables that were used to calculate the chi-square statistic.
+    You can verify every number used in the calculation.
+    """)
+    
+    # Get the details from the test result
+    if hasattr(chi_sq, 'details') and chi_sq.details:
+        details = chi_sq.details
+        
+        # #region agent log
+        try:
+            with open(log_path, "a") as f:
+                f.write(json.dumps({"location": "results_dashboard.py:912", "message": "chi_sq details check", "data": {"has_details": bool(details), "details_keys": list(details.keys()) if isinstance(details, dict) else "not_dict", "details_type": str(type(details))}, "hypothesisId": "D", "timestamp": time_module.time(), "sessionId": "debug-session", "runId": "run1"}) + "\n")
+        except Exception as e:
+            pass  # Silent fail on logging
+        # #endregion
+        
+        # 1. Observed Contingency Table
+        st.markdown("#### 1. Observed Contingency Table (What Actually Happened)")
+        st.markdown("""
+        This table shows the actual counts: how many leads in each response time bucket 
+        resulted in orders vs. no orders.
+        """)
+        
+        if 'contingency_table' in details:
+            contingency_dict = details['contingency_table']
+            
+            # #region agent log
+            try:
+                with open(log_path, "a") as f:
+                    f.write(json.dumps({"location": "results_dashboard.py:930", "message": "contingency_dict loaded", "data": {"contingency_dict_empty": not bool(contingency_dict), "contingency_dict_keys": list(contingency_dict.keys()) if isinstance(contingency_dict, dict) else "not_dict", "contingency_dict_type": str(type(contingency_dict)), "sample_item": {k: str(v)[:100] for k, v in list(contingency_dict.items())[:2]} if isinstance(contingency_dict, dict) and len(contingency_dict) > 0 else "none"}, "hypothesisId": "A", "timestamp": time_module.time(), "sessionId": "debug-session", "runId": "run1"}) + "\n")
+            except Exception as e:
+                pass  # Silent fail on logging
+            # #endregion
+            
+            # Convert to DataFrame for better display
+            # Handle case where dict values might be dicts or numbers
+            if contingency_dict:
+                # Check if dictionary is transposed (keys are outcome values, not buckets)
+                # pandas .to_dict() can create {column -> {index -> value}} orientation
+                first_key = next(iter(contingency_dict.keys())) if contingency_dict else None
+                is_transposed = (isinstance(first_key, bool) or first_key in [0, 1, False, True]) and \
+                               isinstance(contingency_dict.get(first_key), dict) and \
+                               all(isinstance(k, str) for k in contingency_dict.get(first_key, {}).keys())
+                
+                # #region agent log
+                try:
+                    with open(log_path, "a") as f:
+                        f.write(json.dumps({"location": "results_dashboard.py:951", "message": "checking transpose", "data": {"is_transposed": is_transposed, "first_key": str(first_key), "first_key_type": str(type(first_key))}, "hypothesisId": "B", "timestamp": time_module.time(), "sessionId": "debug-session", "runId": "run1"}) + "\n")
+                except Exception as e:
+                    pass
+                # #endregion
+                
+                # Transpose if needed: convert {False: {bucket: count}, True: {bucket: count}} 
+                # to {bucket: {False: count, True: count}}
+                if is_transposed:
+                    transposed_dict = {}
+                    for outcome_val, bucket_counts in contingency_dict.items():
+                        for bucket, count in bucket_counts.items():
+                            if bucket not in transposed_dict:
+                                transposed_dict[bucket] = {}
+                            transposed_dict[bucket][outcome_val] = count
+                    contingency_dict = transposed_dict
+                    
+                    # #region agent log
+                    try:
+                        with open(log_path, "a") as f:
+                            f.write(json.dumps({"location": "results_dashboard.py:965", "message": "after transpose", "data": {"transposed_keys": list(contingency_dict.keys())[:5], "sample_bucket": {k: str(v) for k, v in list(contingency_dict.values())[0].items()} if contingency_dict else "none"}, "hypothesisId": "B", "timestamp": time_module.time(), "sessionId": "debug-session", "runId": "run1"}) + "\n")
+                    except Exception as e:
+                        pass
+                    # #endregion
+                
+                # Convert nested dict structure to proper DataFrame
+                rows = []
+                for bucket, values in contingency_dict.items():
+                    # #region agent log
+                    try:
+                        with open(log_path, "a") as f:
+                            f.write(json.dumps({"location": "results_dashboard.py:943", "message": "processing bucket", "data": {"bucket": str(bucket), "values_type": str(type(values)), "is_dict": isinstance(values, dict), "values_keys": list(values.keys()) if isinstance(values, dict) else "not_dict", "values_repr": str(values)[:200]}, "hypothesisId": "B,C", "timestamp": time_module.time(), "sessionId": "debug-session", "runId": "run1"}) + "\n")
+                    except Exception as e:
+                        pass  # Silent fail on logging
+                    # #endregion
+                    if isinstance(values, dict):
+                        row = {'Response Time': bucket}
+                        # Handle both boolean (True/False) and numeric (0/1) keys
+                        no_order_0 = values.get(0, None)
+                        no_order_false = values.get(False, None)
+                        order_1 = values.get(1, None)
+                        order_true = values.get(True, None)
+                        
+                        # #region agent log
+                        try:
+                            with open(log_path, "a") as f:
+                                f.write(json.dumps({"location": "results_dashboard.py:956", "message": "key extraction attempt", "data": {"bucket": str(bucket), "no_order_0": no_order_0, "no_order_false": no_order_false, "order_1": order_1, "order_true": order_true, "all_keys": list(values.keys()), "all_keys_types": [str(type(k)) for k in values.keys()]}, "hypothesisId": "B", "timestamp": time_module.time(), "sessionId": "debug-session", "runId": "run1"}) + "\n")
+                        except Exception as e:
+                            pass  # Silent fail on logging
+                        # #endregion
+                        
+                        row['No Order'] = values.get(0, values.get(False, 0))
+                        row['Order'] = values.get(1, values.get(True, 0))
+                        
+                        # #region agent log
+                        try:
+                            with open(log_path, "a") as f:
+                                f.write(json.dumps({"location": "results_dashboard.py:967", "message": "row values after extraction", "data": {"bucket": str(bucket), "no_order": row['No Order'], "order": row['Order']}, "hypothesisId": "E", "timestamp": time_module.time(), "sessionId": "debug-session", "runId": "run1"}) + "\n")
+                        except Exception as e:
+                            pass  # Silent fail on logging
+                        # #endregion
+                        
+                        rows.append(row)
+                    else:
+                        # Single value case (shouldn't happen but handle it)
+                        row = {'Response Time': bucket, 'No Order': 0, 'Order': values}
+                        rows.append(row)
+                
+                contingency_df = pd.DataFrame(rows)
+                contingency_df = contingency_df.set_index('Response Time')
+                
+                # Ensure we have both columns
+                if 'No Order' not in contingency_df.columns:
+                    contingency_df['No Order'] = 0
+                if 'Order' not in contingency_df.columns:
+                    contingency_df['Order'] = 0
+                
+                # Add totals
+                contingency_df['Total Leads'] = contingency_df.sum(axis=1)
+                contingency_df.loc['TOTAL'] = contingency_df.sum(axis=0)
+                
+                st.dataframe(contingency_df, use_container_width=True)
+            
+            st.caption("""
+            **How to read:** Each cell shows the count of leads. For example, if the 
+            "0-15 min" row shows "No Order: 500, Order: 100", that means 500 leads 
+            in that bucket didn't result in orders, and 100 did.
+            """)
+        
+        # 2. Expected Frequencies Table
+        st.markdown("---")
+        st.markdown("#### 2. Expected Frequencies Table (What We'd Expect If Speed Didn't Matter)")
+        st.markdown("""
+        This table shows what we would expect to see if response time had no effect 
+        on close rates. Each cell is calculated as: 
+        **(Row Total × Column Total) ÷ Grand Total**
+        """)
+        
+        if 'expected_frequencies' in details:
+            expected_dict = details['expected_frequencies']
+            # Handle nested dict structure
+            if expected_dict:
+                # Check if dictionary is transposed (same issue as contingency_table)
+                first_key = next(iter(expected_dict.keys())) if expected_dict else None
+                is_transposed = (isinstance(first_key, bool) or first_key in [0, 1, False, True]) and \
+                               isinstance(expected_dict.get(first_key), dict) and \
+                               all(isinstance(k, str) for k in expected_dict.get(first_key, {}).keys())
+                
+                # Transpose if needed
+                if is_transposed:
+                    transposed_dict = {}
+                    for outcome_val, bucket_counts in expected_dict.items():
+                        for bucket, count in bucket_counts.items():
+                            if bucket not in transposed_dict:
+                                transposed_dict[bucket] = {}
+                            transposed_dict[bucket][outcome_val] = count
+                    expected_dict = transposed_dict
+                
+                rows = []
+                for bucket, values in expected_dict.items():
+                    if isinstance(values, dict):
+                        row = {'Response Time': bucket}
+                        # Handle both boolean (True/False) and numeric (0/1) keys
+                        row['Expected No Order'] = values.get(0, values.get(False, 0.0))
+                        row['Expected Order'] = values.get(1, values.get(True, 0.0))
+                        rows.append(row)
+                    else:
+                        row = {'Response Time': bucket, 'Expected No Order': 0.0, 'Expected Order': values}
+                        rows.append(row)
+                
+                expected_df = pd.DataFrame(rows)
+                expected_df = expected_df.set_index('Response Time')
+                
+                # Ensure we have both columns
+                if 'Expected No Order' not in expected_df.columns:
+                    expected_df['Expected No Order'] = 0.0
+                if 'Expected Order' not in expected_df.columns:
+                    expected_df['Expected Order'] = 0.0
+                
+                # Round for display
+                expected_df = expected_df.round(1)
+                
+                # Add totals
+                expected_df['Expected Total'] = expected_df.sum(axis=1)
+                expected_df.loc['TOTAL'] = expected_df.sum(axis=0)
+                
+                st.dataframe(expected_df, use_container_width=True)
+            
+            st.caption("""
+            **How to read:** These are the expected counts if response time had no effect. 
+            Compare these to the observed table above to see where reality differs from expectation.
+            """)
+        
+        # 3. Contributions to Chi-Square Table
+        st.markdown("---")
+        st.markdown("#### 3. Contributions to Chi-Square Statistic (Cell-by-Cell)")
+        st.markdown("""
+        This table shows how much each cell contributes to the overall chi-square statistic.
+        Formula for each cell: **(Observed - Expected)² ÷ Expected**
+        """)
+        
+        if 'contributions' in details:
+            contributions_dict = details['contributions']
+            # Handle nested dict structure
+            if contributions_dict:
+                # Check if dictionary is transposed (same issue)
+                first_key = next(iter(contributions_dict.keys())) if contributions_dict else None
+                is_transposed = (isinstance(first_key, bool) or first_key in [0, 1, False, True]) and \
+                               isinstance(contributions_dict.get(first_key), dict) and \
+                               all(isinstance(k, str) for k in contributions_dict.get(first_key, {}).keys())
+                
+                # Transpose if needed
+                if is_transposed:
+                    transposed_dict = {}
+                    for outcome_val, bucket_counts in contributions_dict.items():
+                        for bucket, count in bucket_counts.items():
+                            if bucket not in transposed_dict:
+                                transposed_dict[bucket] = {}
+                            transposed_dict[bucket][outcome_val] = count
+                    contributions_dict = transposed_dict
+                
+                rows = []
+                for bucket, values in contributions_dict.items():
+                    if isinstance(values, dict):
+                        row = {'Response Time': bucket}
+                        # Handle both boolean (True/False) and numeric (0/1) keys
+                        row['Contribution (No Order)'] = values.get(0, values.get(False, 0.0))
+                        row['Contribution (Order)'] = values.get(1, values.get(True, 0.0))
+                        rows.append(row)
+                    else:
+                        row = {'Response Time': bucket, 'Contribution (No Order)': 0.0, 'Contribution (Order)': values}
+                        rows.append(row)
+                
+                contributions_df = pd.DataFrame(rows)
+                contributions_df = contributions_df.set_index('Response Time')
+                
+                # Ensure we have both columns
+                if 'Contribution (No Order)' not in contributions_df.columns:
+                    contributions_df['Contribution (No Order)'] = 0.0
+                if 'Contribution (Order)' not in contributions_df.columns:
+                    contributions_df['Contribution (Order)'] = 0.0
+                
+                # Round for display
+                contributions_df = contributions_df.round(3)
+                
+                # Add row totals
+                contributions_df['Total Contribution'] = contributions_df.sum(axis=1)
+                contributions_df.loc['TOTAL (χ²)'] = contributions_df.sum(axis=0)
+                
+                st.dataframe(contributions_df, use_container_width=True)
+            
+            st.caption(f"""
+            **How to read:** Each cell shows its contribution to the chi-square statistic. 
+            The bottom right cell shows the total chi-square statistic: **{chi_sq.statistic:.2f}**
+            """)
+        
+        # 4. Side-by-side comparison
+        st.markdown("---")
+        st.markdown("#### 4. Side-by-Side Comparison: Observed vs Expected")
+        st.markdown("""
+        This table makes it easy to compare observed and expected values side-by-side.
+        """)
+        
+        if 'contingency_table' in details and 'expected_frequencies' in details:
+            obs_dict = details['contingency_table']
+            exp_dict = details['expected_frequencies']
+            
+            # Check and transpose both dictionaries if needed
+            first_key_obs = next(iter(obs_dict.keys())) if obs_dict else None
+            is_transposed_obs = (isinstance(first_key_obs, bool) or first_key_obs in [0, 1, False, True]) and \
+                               isinstance(obs_dict.get(first_key_obs), dict) and \
+                               all(isinstance(k, str) for k in obs_dict.get(first_key_obs, {}).keys())
+            
+            if is_transposed_obs:
+                transposed_obs = {}
+                for outcome_val, bucket_counts in obs_dict.items():
+                    for bucket, count in bucket_counts.items():
+                        if bucket not in transposed_obs:
+                            transposed_obs[bucket] = {}
+                        transposed_obs[bucket][outcome_val] = count
+                obs_dict = transposed_obs
+            
+            first_key_exp = next(iter(exp_dict.keys())) if exp_dict else None
+            is_transposed_exp = (isinstance(first_key_exp, bool) or first_key_exp in [0, 1, False, True]) and \
+                               isinstance(exp_dict.get(first_key_exp), dict) and \
+                               all(isinstance(k, str) for k in exp_dict.get(first_key_exp, {}).keys())
+            
+            if is_transposed_exp:
+                transposed_exp = {}
+                for outcome_val, bucket_counts in exp_dict.items():
+                    for bucket, count in bucket_counts.items():
+                        if bucket not in transposed_exp:
+                            transposed_exp[bucket] = {}
+                        transposed_exp[bucket][outcome_val] = count
+                exp_dict = transposed_exp
+            
+            comparison_rows = []
+            for bucket in obs_dict.keys():
+                # Handle observed values
+                obs_values = obs_dict[bucket]
+                if isinstance(obs_values, dict):
+                    # Handle both boolean (True/False) and numeric (0/1) keys
+                    obs_no_order = obs_values.get(0, obs_values.get(False, 0))
+                    obs_order = obs_values.get(1, obs_values.get(True, 0))
+                else:
+                    obs_no_order = 0
+                    obs_order = obs_values if isinstance(obs_values, (int, float)) else 0
+                
+                # Handle expected values
+                exp_values = exp_dict.get(bucket, {})
+                if isinstance(exp_values, dict):
+                    # Handle both boolean (True/False) and numeric (0/1) keys
+                    exp_no_order = exp_values.get(0, exp_values.get(False, 0.0))
+                    exp_order = exp_values.get(1, exp_values.get(True, 0.0))
+                else:
+                    exp_no_order = 0.0
+                    exp_order = exp_values if isinstance(exp_values, (int, float)) else 0.0
+                
+                diff_no_order = obs_no_order - exp_no_order
+                diff_order = obs_order - exp_order
+                
+                comparison_rows.append({
+                    'Response Time': bucket,
+                    'Observed (No Order)': f"{int(obs_no_order):,}",
+                    'Expected (No Order)': f"{exp_no_order:.1f}",
+                    'Difference': f"{diff_no_order:+.1f}",
+                    'Observed (Order)': f"{int(obs_order):,}",
+                    'Expected (Order)': f"{exp_order:.1f}",
+                    'Difference': f"{diff_order:+.1f}"
+                })
+            
+            comparison_df = pd.DataFrame(comparison_rows)
+            st.dataframe(comparison_df, use_container_width=True, hide_index=True)
     
     # Technical details with step-by-step walkthrough
     with st.expander("🔢 Technical Details (Chi-Square Test)", expanded=False):
@@ -986,6 +1534,78 @@ def render_proportions_step(df: pd.DataFrame, stat_results: Dict[str, Any], show
     
     # Add percentage points explainer at the top
     render_percentage_points_explainer()
+    
+    # =========================================================================
+    # SAMPLE INPUT DATA - Show actual data rows used in proportion tests
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("## 📊 Sample Input Data")
+    
+    st.markdown("""
+    Below are sample rows from your actual data that were used in the proportion z-tests.
+    This shows the raw values for each bucket before calculating close rates.
+    """)
+    
+    # Show sample rows if we have the required columns
+    if 'response_bucket' in df.columns and 'ordered' in df.columns:
+        prop_df = df[['response_bucket', 'ordered']].dropna()
+        
+        if len(prop_df) > 0:
+            # Show sample rows from different buckets
+            sample_size = min(15, len(prop_df))
+            sample_df = prop_df.head(sample_size).copy()
+            
+            # Make it more readable
+            display_sample = sample_df.copy()
+            display_sample['Ordered'] = display_sample['ordered'].apply(lambda x: 'Yes' if x == 1 else 'No')
+            display_sample = display_sample[['response_bucket', 'Ordered']]
+            display_sample.columns = ['Response Time Bucket', 'Ordered?']
+            
+            st.dataframe(display_sample, use_container_width=True, hide_index=True)
+            
+            st.caption(f"""
+            Showing {sample_size} of {len(prop_df):,} total rows used in the proportion tests.
+            """)
+            
+            # Show how this data is used in comparisons
+            st.markdown("#### How This Data is Used in Comparisons")
+            st.markdown("""
+            The z-test compares close rates between two buckets. For each bucket, we calculate:
+            - **Number of leads** (total rows in that bucket)
+            - **Number of orders** (rows where Ordered = Yes)
+            - **Close rate** = Orders ÷ Leads
+            """)
+            
+            # Show a quick example calculation
+            if len(prop_df) > 0:
+                example_buckets = prop_df['response_bucket'].unique()[:2]
+                if len(example_buckets) >= 2:
+                    bucket1, bucket2 = example_buckets[0], example_buckets[1]
+                    b1_data = prop_df[prop_df['response_bucket'] == bucket1]
+                    b2_data = prop_df[prop_df['response_bucket'] == bucket2]
+                    
+                    if len(b1_data) > 0 and len(b2_data) > 0:
+                        b1_orders = b1_data['ordered'].sum()
+                        b1_leads = len(b1_data)
+                        b1_rate = b1_orders / b1_leads if b1_leads > 0 else 0
+                        
+                        b2_orders = b2_data['ordered'].sum()
+                        b2_leads = len(b2_data)
+                        b2_rate = b2_orders / b2_leads if b2_leads > 0 else 0
+                        
+                        example_calc = pd.DataFrame({
+                            'Bucket': [str(bucket1), str(bucket2)],
+                            'Total Leads': [b1_leads, b2_leads],
+                            'Orders': [b1_orders, b2_orders],
+                            'Close Rate': [f"{b1_rate*100:.1f}%", f"{b2_rate*100:.1f}%"],
+                            'Calculation': [
+                                f"{b1_orders} ÷ {b1_leads}",
+                                f"{b2_orders} ÷ {b2_leads}"
+                            ]
+                        })
+                        
+                        st.dataframe(example_calc, use_container_width=True, hide_index=True)
+                        st.caption("Example calculation for two buckets. The z-test compares these rates.")
     
     # Create human-friendly comparison table
     comparisons = []
@@ -1106,11 +1726,18 @@ def render_proportions_step(df: pd.DataFrame, stat_results: Dict[str, Any], show
             **Difference:** {fast_rate*100:.1f}% - {slow_rate*100:.1f}% = **{diff_pp:+.1f} percentage points**
             """)
             
-            # Step 3: The test statistic
+            # Step 3: The test statistic with full calculation
             st.markdown(f"#### Step 3: Is this difference statistically significant?")
             
             z_stat = extreme.statistic if hasattr(extreme, 'statistic') else 0
             p_val = extreme.p_value if hasattr(extreme, 'p_value') else 1
+            
+            # Calculate intermediate values for display
+            import numpy as np
+            total_sales = fast_sales + slow_sales
+            total_leads = fast_leads + slow_leads
+            pooled_proportion = total_sales / total_leads if total_leads > 0 else 0
+            standard_error = np.sqrt(pooled_proportion * (1 - pooled_proportion) * (1/fast_leads + 1/slow_leads)) if total_leads > 0 else 0
             
             st.markdown(f"""
             We calculate a **z-score** of **{z_stat:.2f}**, which tells us how many "standard deviations" 
@@ -1121,6 +1748,102 @@ def render_proportions_step(df: pd.DataFrame, stat_results: Dict[str, Any], show
             
             **Translation:** {p_exp['plain_english']}
             """)
+            
+            # Show the full calculation
+            st.markdown("---")
+            st.markdown("#### Complete Z-Test Calculation")
+            st.markdown("""
+            Here's the complete step-by-step calculation of the z-test statistic:
+            """)
+            
+            st.markdown(f"""
+            **Step 3a: Calculate the pooled proportion**
+            
+            When testing if two proportions are different, we first calculate what the overall 
+            proportion would be if we combined both groups:
+            
+            **Formula:** Pooled proportion (p̂) = (Total sales in both groups) ÷ (Total leads in both groups)
+            
+            **Calculation:**
+            - Total sales = {fast_sales:,} + {slow_sales:,} = **{total_sales:,}**
+            - Total leads = {fast_leads:,} + {slow_leads:,} = **{total_leads:,}**
+            - p̂ = {total_sales:,} ÷ {total_leads:,} = **{pooled_proportion:.4f}** ({pooled_proportion*100:.2f}%)
+            """)
+            
+            st.markdown(f"""
+            **Step 3b: Calculate the standard error**
+            
+            The standard error tells us how much variation we'd expect in the difference 
+            between proportions due to random sampling:
+            
+            **Formula:** SE = √[p̂(1-p̂)(1/n₁ + 1/n₂)]
+            
+            **Step-by-step calculation:**
+            - p̂ = {pooled_proportion:.4f}
+            - (1-p̂) = 1 - {pooled_proportion:.4f} = **{1-pooled_proportion:.4f}**
+            - 1/n₁ = 1/{fast_leads:,} = **{1/fast_leads:.6f}**
+            - 1/n₂ = 1/{slow_leads:,} = **{1/slow_leads:.6f}**
+            - (1/n₁ + 1/n₂) = {1/fast_leads:.6f} + {1/slow_leads:.6f} = **{1/fast_leads + 1/slow_leads:.6f}**
+            - p̂(1-p̂) = {pooled_proportion:.4f} × {1-pooled_proportion:.4f} = **{pooled_proportion * (1-pooled_proportion):.6f}**
+            - p̂(1-p̂)(1/n₁ + 1/n₂) = {pooled_proportion * (1-pooled_proportion):.6f} × {1/fast_leads + 1/slow_leads:.6f} = **{pooled_proportion * (1-pooled_proportion) * (1/fast_leads + 1/slow_leads):.6f}**
+            - SE = √[{pooled_proportion * (1-pooled_proportion) * (1/fast_leads + 1/slow_leads):.6f}] = **{standard_error:.4f}**
+            """)
+            
+            st.markdown(f"""
+            **Step 3c: Calculate the z-statistic**
+            
+            The z-statistic measures how many standard errors apart the two proportions are:
+            
+            **Formula:** z = (p₁ - p₂) ÷ SE
+            
+            **Step-by-step calculation:**
+            - p₁ (fast bucket) = {fast_rate:.4f} ({fast_rate*100:.2f}%)
+            - p₂ (slow bucket) = {slow_rate:.4f} ({slow_rate*100:.2f}%)
+            - Difference = p₁ - p₂ = {fast_rate:.4f} - {slow_rate:.4f} = **{fast_rate - slow_rate:.4f}**
+            - SE = {standard_error:.4f}
+            - z = {fast_rate - slow_rate:.4f} ÷ {standard_error:.4f} = **{z_stat:.2f}**
+            """)
+            
+            st.markdown(f"""
+            **Step 3d: Interpret the z-statistic**
+            
+            - A z-score of **{z_stat:.2f}** means the difference is **{abs(z_stat):.2f} standard errors** away from zero
+            - We then look up this z-score in a standard normal distribution to get the p-value
+            - P-value = **{p_val:.4f}** ({p_val*100:.2f}% chance this difference is due to random chance)
+            """)
+            
+            # Create a summary table
+            calc_summary = pd.DataFrame({
+                'Component': [
+                    'Fast bucket proportion (p₁)',
+                    'Slow bucket proportion (p₂)',
+                    'Difference (p₁ - p₂)',
+                    'Pooled proportion (p̂)',
+                    'Standard error (SE)',
+                    'Z-statistic',
+                    'P-value'
+                ],
+                'Value': [
+                    f"{fast_rate:.4f} ({fast_rate*100:.2f}%)",
+                    f"{slow_rate:.4f} ({slow_rate*100:.2f}%)",
+                    f"{fast_rate - slow_rate:.4f} ({diff_pp:.2f} percentage points)",
+                    f"{pooled_proportion:.4f} ({pooled_proportion*100:.2f}%)",
+                    f"{standard_error:.4f}",
+                    f"{z_stat:.2f}",
+                    f"{p_val:.4f}"
+                ],
+                'Calculation': [
+                    f"{fast_sales:,} ÷ {fast_leads:,}",
+                    f"{slow_sales:,} ÷ {slow_leads:,}",
+                    f"{fast_rate:.4f} - {slow_rate:.4f}",
+                    f"{total_sales:,} ÷ {total_leads:,}",
+                    f"√[p̂(1-p̂)(1/n₁ + 1/n₂)]",
+                    f"(p₁ - p₂) ÷ SE",
+                    "From standard normal distribution"
+                ]
+            })
+            
+            st.dataframe(calc_summary, use_container_width=True, hide_index=True)
             
             # Step 4: Conclusion
             st.markdown(f"#### Step 4: The Verdict")
@@ -1138,9 +1861,14 @@ def render_proportions_step(df: pd.DataFrame, stat_results: Dict[str, Any], show
                 
                 The {diff_pp:+.1f} percentage point difference could be due to random variation.
                 """)
+            
+            # =========================================================================
+            # VERIFICATION PANEL - Z-Test
+            # =========================================================================
+            render_z_test_verification(extreme)
 
 
-def render_regression_step(regression_result, show_math: bool) -> None:
+def render_regression_step(df: pd.DataFrame, regression_result, show_math: bool) -> None:
     """Render the regression step with plain-English explanation."""
     # Bridge sentence to maintain narrative flow
     st.info(f"💡 **Why this step:** {get_step_bridge('regression')}")
@@ -1179,6 +1907,35 @@ def render_regression_step(regression_result, show_math: bool) -> None:
     
     st.markdown("**What we did:** We used regression to mathematically isolate the effect of speed from lead source.")
     
+    # Check if we can actually control for lead source (check if it varies)
+    if 'lead_source' in df.columns:
+        lead_source_counts = df['lead_source'].value_counts()
+        n_unique_sources = len(lead_source_counts)
+        max_source_prop = lead_source_counts.max() / len(df) if len(df) > 0 else 0
+        
+        # If only one source, or one source dominates (>95%), we can't effectively control
+        if n_unique_sources == 1:
+            st.markdown("---")
+            render_no_controls_explanation(
+                available_controls=[],
+                missing_controls=['lead_source'],
+                reason="controls_dont_vary"
+            )
+        elif max_source_prop > 0.95:
+            st.markdown("---")
+            render_no_controls_explanation(
+                available_controls=['lead_source'],
+                missing_controls=['lead_source'],
+                reason="insufficient_variation"
+            )
+    elif 'lead_source' not in df.columns:
+        st.markdown("---")
+        render_no_controls_explanation(
+            available_controls=[],
+            missing_controls=['lead_source'],
+            reason="no_controls_available"
+        )
+    
     # Show result prominently
     if regression_result.is_response_time_significant:
         st.success("""
@@ -1194,8 +1951,8 @@ def render_regression_step(regression_result, show_math: bool) -> None:
         - Salesperson skill differences (better salespeople may both respond faster and close more)
         - Time-of-day or day-of-week effects
         
-        **This analysis cannot prove causation.** Only a randomized experiment can definitively 
-        establish that faster responses *cause* higher conversion rates.
+        **This analysis cannot prove causation.** This observational analysis has limitations 
+        in establishing that faster responses *cause* higher conversion rates.
         """)
     else:
         st.warning("""
@@ -1207,6 +1964,75 @@ def render_regression_step(regression_result, show_math: bool) -> None:
         
         **Translation:** Focus on lead quality, not just response speed.
         """)
+    
+    # =========================================================================
+    # SAMPLE INPUT DATA - Show actual data rows used in regression
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("## 📊 Sample Input Data")
+    
+    st.markdown("""
+    Below are sample rows from your actual data that were used in the regression model.
+    This shows the raw values before they're transformed into the regression formula.
+    """)
+    
+    # Filter to rows that would be used in regression (have all required columns)
+    regression_cols = ['ordered', 'response_bucket', 'lead_source']
+    
+    # Check if columns exist
+    missing_cols = [col for col in regression_cols if col not in df.columns]
+    if missing_cols:
+        st.warning(f"⚠️ Cannot show sample data: Missing columns {missing_cols}")
+    else:
+        regression_df = df[regression_cols].dropna()
+        
+        if len(regression_df) == 0:
+            st.warning("⚠️ No data available after filtering. All rows have missing values in required columns.")
+        else:
+            # Show sample rows
+            sample_size = min(10, len(regression_df))
+            sample_df = regression_df.head(sample_size).copy()
+            
+            # Make it more readable
+            display_sample = sample_df.copy()
+            display_sample['Ordered'] = display_sample['ordered'].apply(lambda x: 'Yes' if x == 1 else 'No')
+            display_sample = display_sample[['response_bucket', 'lead_source', 'Ordered']]
+            display_sample.columns = ['Response Time Bucket', 'Lead Source', 'Ordered?']
+            
+            st.dataframe(display_sample, use_container_width=True, hide_index=True)
+            
+            st.caption(f"""
+            Showing {sample_size} of {len(regression_df):,} total rows used in the regression model.
+            """)
+            
+            # Show data breakdown
+            st.markdown("#### Data Breakdown by Category")
+            
+            breakdown_col1, breakdown_col2 = st.columns(2)
+            
+            with breakdown_col1:
+                st.markdown("**By Response Time Bucket:**")
+                try:
+                    bucket_counts = regression_df.groupby('response_bucket').agg({
+                        'ordered': ['count', 'sum', 'mean']
+                    }).round(3)
+                    bucket_counts.columns = ['Total Leads', 'Orders', 'Close Rate']
+                    bucket_counts['Close Rate'] = bucket_counts['Close Rate'].apply(lambda x: f"{x*100:.1f}%")
+                    st.dataframe(bucket_counts, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error creating bucket breakdown: {e}")
+            
+            with breakdown_col2:
+                st.markdown("**By Lead Source:**")
+                try:
+                    source_counts = regression_df.groupby('lead_source').agg({
+                        'ordered': ['count', 'sum', 'mean']
+                    }).round(3)
+                    source_counts.columns = ['Total Leads', 'Orders', 'Close Rate']
+                    source_counts['Close Rate'] = source_counts['Close Rate'].apply(lambda x: f"{x*100:.1f}%")
+                    st.dataframe(source_counts, use_container_width=True)
+                except Exception as e:
+                    st.error(f"Error creating source breakdown: {e}")
     
     # Show odds ratios with intuitive explanation
     st.markdown("---")
@@ -1301,8 +2127,386 @@ def render_regression_step(regression_result, show_math: bool) -> None:
         fig = create_forest_plot(regression_result.odds_ratios)
         st.plotly_chart(fig, use_container_width=True)
     
+    # =========================================================================
+    # DUMMY ENCODING EXPLANATION - Show how categorical variables are encoded
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🔢 How Categorical Variables Are Encoded (Dummy Variables)")
+    
+    st.markdown("""
+    Regression models need numbers, not text. So we convert categorical variables (like 
+    "0-15 min" or "Website") into **dummy variables** (0s and 1s).
+    
+    **How it works:**
+    - We pick one category as the **reference** (baseline)
+    - For each other category, we create a new variable that's 1 if the row belongs to 
+      that category, 0 otherwise
+    - The reference category is represented by all dummy variables being 0
+    """)
+    
+    if hasattr(regression_result, 'reference_bucket') and regression_result.reference_bucket:
+        ref_bucket = regression_result.reference_bucket
+        
+        # Get unique buckets
+        if 'response_bucket' in df.columns:
+            buckets = sorted(df['response_bucket'].dropna().unique(), key=str)
+            
+            st.markdown(f"""
+            **For Response Time Bucket:**
+            
+            - **Reference category:** `{ref_bucket}` (all dummy variables = 0)
+            """)
+            
+            # Show encoding example
+            encoding_rows = []
+            for bucket in buckets:
+                if str(bucket) != ref_bucket:
+                    # Create a row showing the encoding
+                    encoding = {}
+                    encoding['Response Time'] = str(bucket)
+                    encoding['Dummy Variable Name'] = f"C({ref_bucket})[T.{bucket}]"
+                    encoding['Value When This Bucket'] = '1'
+                    encoding['Value When Other Buckets'] = '0'
+                    encoding['Interpretation'] = f"Compared to {ref_bucket}"
+                    encoding_rows.append(encoding)
+            
+            if encoding_rows:
+                encoding_df = pd.DataFrame(encoding_rows)
+                st.dataframe(encoding_df, use_container_width=True, hide_index=True)
+            
+            # Show example with actual data
+            st.markdown("#### Example: How a Sample Lead is Encoded")
+            
+            if len(regression_df) > 0:
+                example_row = regression_df.iloc[0]
+                example_bucket = example_row['response_bucket']
+                example_source = example_row['lead_source']
+                
+                st.markdown(f"""
+                **Example lead:**
+                - Response time: **{example_bucket}**
+                - Lead source: **{example_source}**
+                - Ordered: **{'Yes' if example_row['ordered'] == 1 else 'No'}**
+                """)
+                
+                # Show encoding
+                encoding_example = []
+                for bucket in buckets:
+                    if str(bucket) != ref_bucket:
+                        is_this_bucket = (str(example_bucket) == str(bucket))
+                        encoding_example.append({
+                            'Variable': f"Response Bucket = {bucket}",
+                            'Dummy Value': '1' if is_this_bucket else '0',
+                            'Meaning': f"{'This lead' if is_this_bucket else 'Not this lead'}"
+                        })
+                
+                if encoding_example:
+                    encoding_example_df = pd.DataFrame(encoding_example)
+                    st.dataframe(encoding_example_df, use_container_width=True, hide_index=True)
+    
+    # =========================================================================
+    # WORKED EXAMPLE - Show actual calculation with sample data
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🧮 Worked Example: Calculating Predictions")
+    
+    st.markdown("""
+    Let's see how the regression formula is applied to actual leads from your data.
+    We'll calculate the predicted probability of ordering for a few example leads.
+    """)
+    
+    if (hasattr(regression_result, 'coefficients') and not regression_result.coefficients.empty and
+        len(regression_df) > 0):
+        
+        import numpy as np
+        
+        # Get the intercept (if available)
+        intercept = 0
+        # Check if 'variable' column exists (coefficients stored as column)
+        if 'variable' in regression_result.coefficients.columns:
+            intercept_row = regression_result.coefficients[regression_result.coefficients['variable'] == 'Intercept']
+            if not intercept_row.empty:
+                intercept = intercept_row.iloc[0].get('coefficient', 0)
+        elif 'Intercept' in regression_result.coefficients.index:
+            intercept = regression_result.coefficients.loc['Intercept'].get('coefficient', 0)
+        elif hasattr(regression_result, 'model_object'):
+            try:
+                intercept = regression_result.model_object.params.get('Intercept', 0)
+            except:
+                pass
+        
+        # Pick 2-3 example leads
+        n_examples = min(3, len(regression_df))
+        example_leads = regression_df.head(n_examples)
+        
+        for idx, (lead_idx, lead) in enumerate(example_leads.iterrows(), 1):
+            st.markdown(f"#### Example {idx}: Lead with {lead['response_bucket']} response, {lead['lead_source']} source")
+            
+            # Get the coefficients for this lead's categories
+            bucket_coef = 0
+            source_coef = 0
+            
+            # Find bucket coefficient
+            # Statsmodels uses format: "C(response_bucket)[T.0-15 min]"
+            bucket_str = str(lead['response_bucket'])
+            import re
+            
+            # Check if this is the reference category (no coefficient, all dummies = 0)
+            if regression_result.reference_bucket and str(bucket_str) == str(regression_result.reference_bucket):
+                bucket_coef = 0  # Reference category
+            else:
+                # Look for coefficient matching this bucket
+                # Check if 'variable' column exists
+                if 'variable' in regression_result.coefficients.columns:
+                    # Iterate through rows
+                    for _, row in regression_result.coefficients.iterrows():
+                        coef_name = str(row.get('variable', ''))
+                        # Check if it's a response_bucket coefficient
+                        if 'response_bucket' in coef_name:
+                            # Extract bucket name from pattern [T.bucket_name]
+                            match = re.search(r'\[T\.(.+?)\]', coef_name)
+                            if match:
+                                coef_bucket = match.group(1)
+                                if str(coef_bucket) == str(bucket_str):
+                                    bucket_coef = row.get('coefficient', 0)
+                                    break
+                else:
+                    # Use index-based access
+                    for coef_idx in regression_result.coefficients.index:
+                        coef_name = str(coef_idx)
+                        if 'response_bucket' in coef_name:
+                            match = re.search(r'\[T\.(.+?)\]', coef_name)
+                            if match:
+                                coef_bucket = match.group(1)
+                                if str(coef_bucket) == str(bucket_str):
+                                    bucket_coef = regression_result.coefficients.loc[coef_idx].get('coefficient', 0)
+                                    break
+            
+            # Find source coefficient
+            source_str = str(lead['lead_source'])
+            # Look for coefficient matching this source
+            if 'variable' in regression_result.coefficients.columns:
+                # Iterate through rows
+                for _, row in regression_result.coefficients.iterrows():
+                    coef_name = str(row.get('variable', ''))
+                    # Check if it's a lead_source coefficient
+                    if 'lead_source' in coef_name:
+                        # Extract source name from pattern [T.source_name]
+                        match = re.search(r'\[T\.(.+?)\]', coef_name)
+                        if match:
+                            coef_source = match.group(1)
+                            if str(coef_source) == str(source_str):
+                                source_coef = row.get('coefficient', 0)
+                                break
+            else:
+                # Use index-based access
+                for coef_idx in regression_result.coefficients.index:
+                    coef_name = str(coef_idx)
+                    if 'lead_source' in coef_name:
+                        match = re.search(r'\[T\.(.+?)\]', coef_name)
+                        if match:
+                            coef_source = match.group(1)
+                            if str(coef_source) == str(source_str):
+                                source_coef = regression_result.coefficients.loc[coef_idx].get('coefficient', 0)
+                                break
+            
+            # Calculate log-odds
+            log_odds = intercept + bucket_coef + source_coef
+            
+            # Calculate probability
+            probability = 1 / (1 + np.exp(-log_odds))
+            
+            # Show the calculation with detailed math
+            st.markdown("**Step 1: Plug into the regression formula**")
+            st.markdown(f"""
+            **Formula:** log-odds = Intercept + β₁×[Bucket] + β₂×[Source]
+            
+            **Your values:**
+            - Intercept = {intercept:.4f}
+            - β₁ (for {lead['response_bucket']} bucket) = {bucket_coef:.4f}
+            - β₂ (for {lead['lead_source']} source) = {source_coef:.4f}
+            
+            **Calculation:**
+            - log-odds = {intercept:.4f} + {bucket_coef:.4f}×1 + {source_coef:.4f}×1
+            - log-odds = {intercept:.4f} + {bucket_coef:.4f} + {source_coef:.4f}
+            - log-odds = **{log_odds:.4f}**
+            """)
+            
+            st.markdown("**Step 2: Convert log-odds to probability**")
+            st.markdown(f"""
+            **Formula:** probability = 1 ÷ (1 + e^(-log-odds))
+            
+            **Step-by-step calculation:**
+            - log-odds = {log_odds:.4f}
+            - -log-odds = -{log_odds:.4f} = **{-log_odds:.4f}**
+            - e^(-log-odds) = e^({-log_odds:.4f}) = **{np.exp(-log_odds):.4f}**
+            - 1 + e^(-log-odds) = 1 + {np.exp(-log_odds):.4f} = **{1 + np.exp(-log_odds):.4f}**
+            - probability = 1 ÷ {1 + np.exp(-log_odds):.4f} = **{probability:.4f}**
+            - probability = **{probability*100:.1f}%**
+            """)
+            
+            # Show actual outcome
+            actual_outcome = "Yes" if lead['ordered'] == 1 else "No"
+            st.info(f"""
+            **Actual outcome for this lead:** {actual_outcome}
+            
+            **Predicted probability:** {probability*100:.1f}%
+            
+            **Difference:** The model predicted a {probability*100:.1f}% chance of ordering, 
+            and the lead {'ordered' if lead['ordered'] == 1 else 'did not order'}.
+            """)
+            
+            if idx < n_examples:
+                st.markdown("---")
+    
+    # =========================================================================
+    # COMPLETE REGRESSION DATA - Show input data and coefficients
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 📊 Complete Regression Data and Coefficients")
+    
+    st.markdown("""
+    Below are the complete data tables and coefficients used in the logistic regression model.
+    You can verify every number used in the calculation.
+    """)
+    
+    # 1. Input Data Summary
+    st.markdown("#### 1. Input Data Summary")
+    st.markdown("""
+    This shows how many observations were used in the regression model, broken down by 
+    response time bucket and lead source.
+    """)
+    
+    if hasattr(regression_result, 'n_observations'):
+        st.markdown(f"""
+        **Total observations in model:** {regression_result.n_observations:,}
+        
+        **Model formula:** `{regression_result.formula}`
+        
+        **Reference category:** {regression_result.reference_bucket or 'Slowest bucket'}
+        """)
+    
+    # 2. Coefficients Table
+    st.markdown("---")
+    st.markdown("#### 2. Regression Coefficients (Log-Odds)")
+    st.markdown("""
+    These are the raw coefficients from the logistic regression model. They represent 
+    the change in **log-odds** of ordering compared to the reference category.
+    
+    **How to interpret:**
+    - Positive coefficient = higher log-odds = more likely to order
+    - Negative coefficient = lower log-odds = less likely to order
+    - Zero = same odds as reference category
+    """)
+    
+    if hasattr(regression_result, 'coefficients') and not regression_result.coefficients.empty:
+        coef_df = regression_result.coefficients.copy()
+        
+        # Make it more readable
+        display_coef = coef_df.copy()
+        if 'coefficient' in display_coef.columns:
+            display_coef['Log-Odds Coefficient'] = display_coef['coefficient'].apply(lambda x: f"{x:.4f}")
+        if 'std_err' in display_coef.columns:
+            display_coef['Standard Error'] = display_coef['std_err'].apply(lambda x: f"{x:.4f}")
+        if 'p_value' in display_coef.columns:
+            display_coef['P-Value'] = display_coef['p_value'].apply(lambda x: f"{x:.4f}")
+        if 'z_value' in display_coef.columns:
+            display_coef['Z-Value'] = display_coef['z_value'].apply(lambda x: f"{x:.2f}")
+        
+        # Show the table
+        st.dataframe(display_coef, use_container_width=True, hide_index=True)
+        
+        st.caption("""
+        **Note:** These coefficients are in log-odds units. To convert to odds ratios, 
+        we use: **Odds Ratio = e^coefficient**. The odds ratios are shown in the table above.
+        """)
+    
+    # 3. Conversion from Coefficients to Odds Ratios
+    st.markdown("---")
+    st.markdown("#### 3. Conversion: Coefficients → Odds Ratios")
+    st.markdown("""
+    The odds ratios shown earlier are calculated from these coefficients using the formula:
+    **Odds Ratio = e^coefficient**
+    
+    This table shows the conversion for each variable:
+    """)
+    
+    if (hasattr(regression_result, 'coefficients') and not regression_result.coefficients.empty and
+        hasattr(regression_result, 'odds_ratios') and not regression_result.odds_ratios.empty):
+        
+        import numpy as np
+        
+        # Merge coefficients and odds ratios
+        conversion_rows = []
+        for idx, row in regression_result.coefficients.iterrows():
+            # Get variable name from 'variable' column if it exists, otherwise use index
+            if 'variable' in regression_result.coefficients.columns:
+                var_name = str(row.get('variable', idx))
+            else:
+                var_name = idx if isinstance(idx, str) else str(idx)
+            coef = row.get('coefficient', 0)
+            or_val = None
+            
+            # Try to find matching odds ratio
+            if not regression_result.odds_ratios.empty:
+                # Try direct index match first (most reliable)
+                try:
+                    if idx in regression_result.odds_ratios.index:
+                        or_val = regression_result.odds_ratios.loc[idx].get('odds_ratio', np.exp(coef))
+                    elif var_name in regression_result.odds_ratios.index:
+                        or_val = regression_result.odds_ratios.loc[var_name].get('odds_ratio', np.exp(coef))
+                    else:
+                        # Try string matching as fallback
+                        or_index_str = regression_result.odds_ratios.index.astype(str)
+                        matches = [i for i, idx_str in enumerate(or_index_str) if var_name.lower() in idx_str.lower()]
+                        if matches:
+                            or_val = regression_result.odds_ratios.iloc[matches[0]].get('odds_ratio', np.exp(coef))
+                        else:
+                            or_val = np.exp(coef)
+                except (KeyError, TypeError):
+                    # If matching fails, calculate from coefficient
+                    or_val = np.exp(coef)
+            else:
+                or_val = np.exp(coef)
+            
+            conversion_rows.append({
+                'Variable': var_name,
+                'Coefficient (β)': f"{coef:.4f}",
+                'Calculation': f"e^({coef:.4f})",
+                'Odds Ratio': f"{or_val:.4f}",
+                'Interpretation': (
+                    f"{or_val:.2f}x {'higher' if or_val > 1 else 'lower'} odds than reference"
+                    if or_val != 1.0 else "Same odds as reference"
+                )
+            })
+        
+        if conversion_rows:
+            conversion_df = pd.DataFrame(conversion_rows)
+            st.dataframe(conversion_df, use_container_width=True, hide_index=True)
+    
+    # 4. Model Summary Statistics
+    st.markdown("---")
+    st.markdown("#### 4. Model Summary Statistics")
+    
+    summary_stats = []
+    if hasattr(regression_result, 'n_observations'):
+        summary_stats.append(['Number of Observations', f"{regression_result.n_observations:,}"])
+    if hasattr(regression_result, 'pseudo_r_squared'):
+        summary_stats.append(['Pseudo R²', f"{regression_result.pseudo_r_squared:.4f} ({regression_result.pseudo_r_squared*100:.2f}%)"])
+    if hasattr(regression_result, 'reference_bucket'):
+        summary_stats.append(['Reference Category', regression_result.reference_bucket or 'Slowest bucket'])
+    
+    if summary_stats:
+        summary_df = pd.DataFrame(summary_stats, columns=['Statistic', 'Value'])
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+    
     # Technical details with regression explainer
     render_regression_explainer()
+    
+    # =========================================================================
+    # VERIFICATION PANEL - Regression
+    # =========================================================================
+    render_regression_verification(regression_result)
     
     with st.expander("🔢 Technical Details (Logistic Regression)", expanded=False):
         st.markdown(f"""
@@ -1346,262 +2550,7 @@ def render_regression_step(regression_result, show_math: bool) -> None:
             """)
 
 
-def render_mixed_effects_step(result, show_math: bool) -> None:
-    """Render the mixed effects step with first-principles explanation."""
-    # Bridge sentence to maintain narrative flow
-    st.info(f"💡 **Why this step:** {get_step_bridge('mixed_effects')}")
-    
-    st.markdown("### Step 6: Accounting for Individual Salesperson Differences")
-    
-    st.markdown("""
-    **The Problem We Must Address:**
-    
-    Until now, our analysis has treated all leads as independent observations. But this 
-    ignores a crucial reality: leads are handled by individual salespeople, and these 
-    individuals differ from one another in ways that may confound our results.
-    
-    Consider the possibility: perhaps skilled salespeople both respond quickly *and* 
-    close at higher rates — not because speed causes success, but because skill 
-    drives both behaviors. If true, the apparent effect of response time would be 
-    at least partially illusory.
-    
-    **The Solution:**
-    
-    A mixed effects model separates the overall population-level effect of response time 
-    from the individual-level variation between salespeople. This allows us to ask: 
-    *After accounting for the fact that some reps are better than others, does response 
-    time still predict success?*
-    """)
-    
-    if result:
-        # Show the key finding
-        if hasattr(result, 'is_significant') and result.is_significant:
-            st.success("""
-            **Conclusion: The effect survives adjustment for representative-level differences.**
-            
-            Even after accounting for variation between individual salespeople, response time 
-            remains a significant predictor of outcomes. This strengthens our confidence that 
-            the effect is genuine rather than an artifact of confounding by salesperson ability.
-            """)
-        else:
-            st.warning("""
-            **Conclusion: Results are less certain after adjustment.**
-            
-            When we account for individual salesperson differences, the effect of response 
-            time becomes weaker or non-significant. This suggests that some of the apparent 
-            effect may be attributable to confounding — better salespeople may simply both 
-            respond faster and close more deals.
-            """)
-        
-        if result.statistics:
-            stats = result.statistics
-            icc = stats.get('icc', 0)
-            
-            st.markdown("---")
-            st.markdown("#### Key Statistics")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.metric("ICC (Intraclass Correlation)", f"{icc*100:.1f}%")
-                st.caption("Fraction of variation attributable to rep-level differences")
-            
-            with col2:
-                st.metric("Representatives Analyzed", stats.get('n_reps', 'N/A'))
-                st.caption("Number of unique salespeople in the dataset")
-            
-            # Interpret the ICC
-            if icc > 0.2:
-                icc_interpretation = "substantial — salesperson identity explains a meaningful portion of outcome variation"
-            elif icc > 0.1:
-                icc_interpretation = "moderate — salesperson effects are present but not dominant"
-            else:
-                icc_interpretation = "modest — most variation exists within salespeople rather than between them"
-            
-            st.markdown(f"""
-            **Interpreting the ICC:**
-            
-            An ICC of {icc*100:.1f}% means that {icc*100:.1f}% of the variation in outcomes is 
-            attributable to differences between salespeople. This is **{icc_interpretation}**.
-            
-            {'A high ICC reinforces the importance of controlling for salesperson effects — without this adjustment, our estimates could be biased.' if icc > 0.15 else 'A lower ICC suggests that salesperson-level confounding may be less of a concern for this dataset.'}
-            """)
-    else:
-        st.info("Mixed effects analysis requires salesperson identification data. Ensure the dataset includes a representative or salesperson identifier.")
-    
-    # Add the detailed explainer
-    render_mixed_effects_explainer()
-
-
-def render_within_rep_step(result, df: pd.DataFrame, show_math: bool) -> None:
-    """Render the within-rep analysis step with first-principles explanation."""
-    # Bridge sentence to maintain narrative flow
-    st.info(f"💡 **Why this step:** {get_step_bridge('within_rep')}")
-    
-    st.markdown("### Step 7: The Within-Person Test")
-    
-    st.markdown("""
-    **The Strongest Form of Observational Evidence:**
-    
-    We now apply the most powerful analytical technique available for observational data: 
-    the within-person comparison. This approach addresses a limitation that all prior 
-    analyses share — the possibility that unmeasured differences between people explain 
-    our results.
-    
-    **The Logic:**
-    
-    Instead of comparing different salespeople to each other, we compare each salesperson 
-    to *themselves*. We ask: when this specific individual responds quickly, do they 
-    close at a higher rate than when this same individual responds slowly?
-    
-    This controls for *everything* about the person that doesn't change between leads:
-    - Their skill level
-    - Their experience and training
-    - Their territory and client base
-    - Their personal style and approach
-    - Countless unmeasured factors
-    
-    The only variable that changes is response time. If outcomes still vary with response 
-    time under these conditions, the evidence for a causal effect becomes substantially stronger.
-    """)
-    
-    if result:
-        # Show the key finding
-        if hasattr(result, 'statistics') and result.statistics.get('p_value', 1) < 0.05:
-            st.success("""
-            **Conclusion: The within-person effect is statistically significant.**
-            
-            When individual salespeople respond quickly, they close at higher rates than when 
-            those same individuals respond slowly. This is compelling evidence that response 
-            speed genuinely influences outcomes — the effect cannot be explained away by 
-            differences in salesperson ability.
-            """)
-        else:
-            st.warning("""
-            **Conclusion: The within-person effect is not statistically significant.**
-            
-            When we examine individual salespeople, the relationship between response time 
-            and outcomes weakens. This suggests that between-person differences — rather 
-            than response speed itself — may explain some of the observed correlation.
-            """)
-        
-        if hasattr(result, 'interpretation'):
-            st.markdown(f"**Detailed Finding:** {result.interpretation}")
-    
-    # Show rep scatter if we have data
-    if 'sales_rep' in df.columns:
-        st.markdown("---")
-        st.markdown("#### Representative-Level Performance Distribution")
-        
-        st.markdown("""
-        The chart below visualizes each salesperson's average response time against their 
-        close rate. Each point represents one individual.
-        
-        **What to look for:**
-        - A downward slope suggests that faster-responding reps close at higher rates
-        - The strength of this relationship indicates potential confounding
-        - Outliers may warrant individual investigation
-        """)
-        
-        rep_perf = calculate_rep_performance(df)
-        if not rep_perf.empty:
-            fig = create_rep_scatter(rep_perf)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # Add the detailed explainer
-    render_within_rep_explainer()
-
-
-def render_confounding_step(result, df: pd.DataFrame) -> None:
-    """Render the confounding assessment step with first-principles explanation."""
-    # Bridge sentence to maintain narrative flow
-    st.info(f"💡 **Why this step:** {get_step_bridge('confounding')}")
-    
-    st.markdown("### Step 8: Comprehensive Confounding Assessment")
-    
-    st.markdown("""
-    **The Central Challenge of Causal Inference:**
-    
-    Throughout this analysis, we have been building toward a causal claim: that responding 
-    faster to leads *causes* higher conversion rates. But observational data — no matter 
-    how carefully analyzed — cannot definitively prove causation. We can only strengthen 
-    or weaken our confidence in a causal interpretation.
-    
-    This final step synthesizes our findings and assesses the overall threat of confounding.
-    
-    **The Question:**
-    
-    How confident can we be that the observed relationship between response time and 
-    outcomes reflects a genuine causal mechanism, rather than spurious correlation 
-    driven by unmeasured confounders?
-    """)
-    
-    if result:
-        st.markdown("---")
-        st.markdown("#### Assessment Summary")
-        
-        if hasattr(result, 'interpretation'):
-            st.markdown(result.interpretation)
-        
-        if hasattr(result, 'confounding_level'):
-            level = result.confounding_level
-            if level == 'low':
-                st.success("""
-                **Overall Assessment: Low Confounding Risk**
-                
-                The effect of response time persists across multiple analytical approaches — 
-                simple comparison, regression adjustment, and within-person analysis. This 
-                consistency across methods strengthens our confidence in a causal interpretation.
-                
-                While we cannot eliminate all possibility of confounding (only a randomized 
-                experiment could do that), the evidence supports treating response time as 
-                a genuine causal factor in conversion outcomes.
-                """)
-            elif level == 'moderate':
-                st.warning("""
-                **Overall Assessment: Moderate Confounding Risk**
-                
-                The results are mixed across analytical approaches. The effect of response 
-                time weakens when we apply more stringent controls, suggesting that some 
-                portion of the apparent effect may be attributable to confounding.
-                
-                We recommend cautious interpretation. Consider running a controlled experiment 
-                (A/B test) to establish causation definitively before making major investments 
-                in response time infrastructure.
-                """)
-            else:
-                st.error("""
-                **Overall Assessment: High Confounding Risk**
-                
-                The effect of response time diminishes substantially or disappears when we 
-                control for potential confounders. This suggests that the observed correlation 
-                may be largely or entirely spurious.
-                
-                We recommend against making causal claims based on this data. The relationship 
-                appears to be driven by confounding variables rather than a genuine causal 
-                mechanism.
-                """)
-    else:
-        st.info("""
-        **Synthesizing the Evidence:**
-        
-        To assess confounding, we examine whether the response time effect remains stable 
-        across different analytical approaches:
-        
-        1. **Simple comparison**: What is the raw difference in outcomes?
-        2. **Regression adjustment**: Does the effect persist after controlling for lead source?
-        3. **Mixed effects**: Does the effect persist after accounting for salesperson differences?
-        4. **Within-person**: Does the effect persist when comparing each person to themselves?
-        
-        Consistency across these approaches strengthens causal interpretation. 
-        Instability raises concern about confounding.
-        """)
-    
-    # Add the detailed explainer
-    render_confounding_explainer()
-
-
-def render_weekly_trends_step(weekly_analysis, close_rates: pd.DataFrame = None) -> None:
+def render_weekly_trends_step(weekly_analysis, df: pd.DataFrame) -> None:
     """
     Render the week-over-week trends analysis step.
     
@@ -1609,6 +2558,13 @@ def render_weekly_trends_step(weekly_analysis, close_rates: pd.DataFrame = None)
     -----------------
     Shows how metrics are changing over time.
     Helps identify if response times are improving or declining.
+    
+    PARAMETERS:
+    -----------
+    weekly_analysis : WeeklyAnalysis
+        The weekly trends analysis result
+    df : pd.DataFrame
+        The full preprocessed DataFrame (needed for deep dive analysis)
     """
     # Bridge sentence to maintain narrative flow
     st.info(f"💡 **Why this step:** {get_step_bridge('weekly_trends')}")
@@ -1885,61 +2841,585 @@ def render_weekly_trends_step(weekly_analysis, close_rates: pd.DataFrame = None)
         - Response time getting slower 🐢
         - Diverging trends (responding faster but closing less — might indicate other issues)
         """)
+    
+    # =========================================================================
+    # SECTION 7: Week Deep Dive - Full Analysis for a Specific Week
+    # =========================================================================
+    st.markdown("---")
+    render_week_deep_dive_section(weekly_analysis, df)
+    
+    # =========================================================================
+    # SECTION 8: Week Comparison - Compare Two Specific Weeks
+    # =========================================================================
+    st.markdown("---")
+    render_week_comparison_section(df)
 
 
-def render_recommendations(stat_results, regression_result, advanced_results) -> None:
-    """Render actionable recommendations based on the analysis."""
+def render_week_deep_dive_section(weekly_analysis, df: pd.DataFrame) -> None:
+    """
+    Render the week deep-dive section with full statistical analysis.
+    
+    WHY THIS SECTION:
+    -----------------
+    Users want to "zoom in" on specific weeks to see:
+    - Full statistical tests for that week
+    - Comparison to the overall dataset
+    - Educational narrative explaining the week's story
+    
+    PARAMETERS:
+    -----------
+    weekly_analysis : WeeklyAnalysis
+        The weekly trends analysis result
+    df : pd.DataFrame
+        The full preprocessed DataFrame
+    """
+    st.markdown("### 🔎 Deep Dive: Analyze a Specific Week")
+    
+    # Get available weeks
+    available_weeks = get_available_weeks(df)
+    
+    if len(available_weeks) < 1:
+        st.info("No weeks available for deep dive analysis.")
+        return
+    
+    # Educational intro
+    with st.expander("📖 Why analyze individual weeks?"):
+        render_week_analysis_educational_intro()
+    
+    # Week selector
+    week_options = {
+        f"{w['week_label']} - {w['week_end']} ({w['n_leads']:,} leads, {w['close_rate']*100:.1f}% close rate)": w['week_start']
+        for w in available_weeks
+    }
+    
+    # Default to most recent week
+    default_index = len(available_weeks) - 1
+    
+    selected_week_label = st.selectbox(
+        "Select a week to analyze:",
+        options=list(week_options.keys()),
+        index=default_index,
+        key="week_deep_dive_selector"
+    )
+    
+    selected_week_start = week_options[selected_week_label]
+    
+    # Run analysis button (to avoid running on every interaction)
+    if st.button("🔬 Run Full Analysis for This Week", type="primary", key="run_week_analysis"):
+        st.session_state['week_deep_dive_result'] = run_weekly_statistical_analysis(
+            df, selected_week_start
+        )
+        st.session_state['week_deep_dive_selected'] = selected_week_start
+    
+    # Display results if available
+    if ('week_deep_dive_result' in st.session_state and 
+        st.session_state.get('week_deep_dive_selected') == selected_week_start):
+        
+        week_result = st.session_state['week_deep_dive_result']
+        overall_close_rate = df['ordered'].mean()
+        
+        # Show warnings first
+        if week_result.warnings:
+            for warning in week_result.warnings:
+                st.warning(warning)
+        
+        # Summary metrics
+        st.markdown("#### 📊 Week Summary")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Leads", f"{week_result.n_leads:,}")
+        with col2:
+            st.metric("Orders", f"{week_result.n_orders:,}")
+        with col3:
+            diff = (week_result.close_rate - overall_close_rate) * 100
+            st.metric(
+                "Close Rate", 
+                f"{week_result.close_rate*100:.1f}%",
+                f"{diff:+.1f}pp vs overall"
+            )
+        with col4:
+            if week_result.chi_square_result:
+                sig_text = "✅ Significant" if week_result.chi_square_result.is_significant else "⚪ Not Significant"
+            else:
+                sig_text = "❌ Insufficient Data"
+            st.metric("Response Time Effect", sig_text)
+        
+        # Narrative story
+        st.markdown("---")
+        story = generate_week_analysis_story(week_result, overall_close_rate)
+        st.markdown(story)
+        
+        # Detailed analysis tabs
+        st.markdown("---")
+        st.markdown("#### 📈 Detailed Statistical Analysis")
+        
+        week_tabs = st.tabs(["Close Rates", "Chi-Square Test", "Proportions Tests", "Regression"])
+        
+        # Tab 1: Close Rates by Bucket
+        with week_tabs[0]:
+            st.info(get_week_educational_context('close_rates'))
+            
+            if not week_result.close_rates_by_bucket.empty:
+                fig = create_close_rate_chart(week_result.close_rates_by_bucket)
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Show data table
+                with st.expander("View Data Table"):
+                    display_df = week_result.close_rates_by_bucket[
+                        ['bucket', 'n_leads', 'n_orders', 'close_rate']
+                    ].copy()
+                    display_df['close_rate'] = display_df['close_rate'].apply(lambda x: f"{x*100:.1f}%")
+                    display_df.columns = ['Response Time', 'Leads', 'Orders', 'Close Rate']
+                    st.dataframe(display_df, use_container_width=True, hide_index=True)
+                
+                # Show Your Work section
+                st.markdown("---")
+                render_weekly_close_rate_calculations(week_result)
+            else:
+                st.info("Not enough data to show close rates by bucket.")
+        
+        # Tab 2: Chi-Square Test
+        with week_tabs[1]:
+            st.info(get_week_educational_context('chi_square'))
+            
+            if week_result.chi_square_result:
+                chi_sq = week_result.chi_square_result
+                p_exp = get_p_value_explanation(chi_sq.p_value)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.metric("Chi-Square Statistic", f"{chi_sq.statistic:.2f}")
+                with col2:
+                    st.metric("P-Value", f"{chi_sq.p_value:.4f}")
+                
+                if chi_sq.is_significant:
+                    st.success(f"**{p_exp['emoji']} {p_exp['verdict']}**\n\n{p_exp['plain_english']}")
+                else:
+                    st.warning(f"**{p_exp['emoji']} {p_exp['verdict']}**\n\n{p_exp['plain_english']}")
+                
+                st.markdown(chi_sq.interpretation)
+                
+                # Show Your Work section
+                st.markdown("---")
+                worked_example = generate_weekly_chi_square_worked_example(week_result)
+                render_weekly_chi_square_worked_example(worked_example)
+            else:
+                st.info("Chi-square test could not be run due to insufficient data this week.")
+        
+        # Tab 3: Proportions Tests
+        with week_tabs[2]:
+            st.info(get_week_educational_context('proportions'))
+            
+            if week_result.pairwise_results:
+                # Create comparison table
+                comparisons = []
+                for result in week_result.pairwise_results:
+                    if hasattr(result, 'details') and result.details:
+                        p_val = result.p_value
+                        p_exp = get_p_value_explanation(p_val)
+                        diff = result.details.get('difference', 0) * 100
+                        
+                        comparisons.append({
+                            'Comparison': result.test_name.replace('Z-Test for Proportions: ', ''),
+                            'Difference (pp)': f"{diff:+.1f}",
+                            'P-Value': f"{p_val:.4f}",
+                            'Significant?': p_exp['emoji'] + " " + ("Yes" if result.is_significant else "No")
+                        })
+                
+                if comparisons:
+                    st.dataframe(pd.DataFrame(comparisons), use_container_width=True, hide_index=True)
+                
+                # Show Your Work section
+                st.markdown("---")
+                render_weekly_proportion_test_calculations(week_result)
+            else:
+                st.info("Pairwise comparisons could not be run due to insufficient data this week.")
+        
+        # Tab 4: Regression
+        with week_tabs[3]:
+            st.info(get_week_educational_context('regression'))
+            
+            if week_result.regression_result and not week_result.regression_result.odds_ratios.empty:
+                reg = week_result.regression_result
+                
+                st.markdown(f"**Model Pseudo R²:** {reg.pseudo_r_squared:.3f}")
+                
+                if reg.is_response_time_significant:
+                    st.success("Response time effect remains significant after controlling for lead source.")
+                else:
+                    st.warning("Response time effect is not significant after controlling for lead source.")
+                
+                # Odds ratios table
+                st.markdown("**Odds Ratios by Response Time Bucket:**")
+                or_df = reg.odds_ratios.copy()
+                or_display = or_df[['bucket', 'odds_ratio', 'ci_lower', 'ci_upper', 'p_value']].copy()
+                or_display.columns = ['Bucket', 'Odds Ratio', 'CI Lower', 'CI Upper', 'P-Value']
+                or_display['Odds Ratio'] = or_display['Odds Ratio'].apply(lambda x: f"{x:.2f}x")
+                or_display['P-Value'] = or_display['P-Value'].apply(lambda x: f"{x:.4f}")
+                st.dataframe(or_display, use_container_width=True, hide_index=True)
+            else:
+                st.info("Logistic regression could not be run due to insufficient data this week.")
+
+
+def render_week_comparison_section(df: pd.DataFrame) -> None:
+    """
+    Render the week comparison section for side-by-side analysis.
+    
+    WHY THIS SECTION:
+    -----------------
+    Users often want to compare two specific weeks to understand:
+    - What improved or declined?
+    - Did statistical significance change?
+    - What story does the comparison tell?
+    
+    PARAMETERS:
+    -----------
+    df : pd.DataFrame
+        The full preprocessed DataFrame
+    """
+    st.markdown("### ⚖️ Compare Two Weeks")
+    
+    st.markdown("""
+    Select two weeks to compare side-by-side. This helps you understand 
+    what changed between specific time periods.
+    """)
+    
+    # Get available weeks
+    available_weeks = get_available_weeks(df)
+    
+    if len(available_weeks) < 2:
+        st.info("Need at least 2 weeks of data to compare weeks.")
+        return
+    
+    # Create week options
+    week_options = {
+        f"{w['week_label']} - {w['week_end']} ({w['n_leads']:,} leads)": w['week_start']
+        for w in available_weeks
+    }
+    week_labels = list(week_options.keys())
+    
+    # Two column layout for selectors
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**Week 1 (Earlier)**")
+        week1_label = st.selectbox(
+            "Select first week:",
+            options=week_labels,
+            index=0,
+            key="week_compare_1",
+            label_visibility="collapsed"
+        )
+    
+    with col2:
+        st.markdown("**Week 2 (Later)**")
+        # Default to the last week
+        default_week2_index = min(len(week_labels) - 1, 1)
+        week2_label = st.selectbox(
+            "Select second week:",
+            options=week_labels,
+            index=default_week2_index,
+            key="week_compare_2",
+            label_visibility="collapsed"
+        )
+    
+    week1_start = week_options[week1_label]
+    week2_start = week_options[week2_label]
+    
+    # Check if same week selected
+    if week1_start == week2_start:
+        st.warning("Please select two different weeks to compare.")
+        return
+    
+    # Run comparison button
+    if st.button("📊 Compare These Weeks", type="primary", key="run_week_comparison"):
+        with st.spinner("Running comparison analysis..."):
+            comparison = compare_two_weeks(df, week1_start, week2_start)
+            st.session_state['week_comparison_result'] = comparison
+            st.session_state['week_comparison_weeks'] = (week1_start, week2_start)
+    
+    # Display results if available
+    if ('week_comparison_result' in st.session_state and 
+        st.session_state.get('week_comparison_weeks') == (week1_start, week2_start)):
+        
+        comparison = st.session_state['week_comparison_result']
+        week1 = comparison.week1
+        week2 = comparison.week2
+        
+        # Side-by-side metrics
+        st.markdown("#### 📈 Key Metrics Comparison")
+        
+        metric_col1, metric_col2, metric_col3 = st.columns(3)
+        
+        with metric_col1:
+            st.markdown(f"**{week1.week_label}**")
+            st.metric("Leads", f"{week1.n_leads:,}")
+            st.metric("Orders", f"{week1.n_orders:,}")
+            st.metric("Close Rate", f"{week1.close_rate*100:.1f}%")
+        
+        with metric_col2:
+            st.markdown(f"**{week2.week_label}**")
+            lead_diff = week2.n_leads - week1.n_leads
+            order_diff = week2.n_orders - week1.n_orders
+            st.metric("Leads", f"{week2.n_leads:,}", f"{lead_diff:+,}")
+            st.metric("Orders", f"{week2.n_orders:,}", f"{order_diff:+,}")
+            st.metric("Close Rate", f"{week2.close_rate*100:.1f}%", 
+                     f"{comparison.close_rate_change:+.1f}pp")
+        
+        with metric_col3:
+            st.markdown("**Change**")
+            lead_pct = (lead_diff / week1.n_leads * 100) if week1.n_leads > 0 else 0
+            st.metric("Lead Volume", f"{lead_pct:+.1f}%")
+            
+            # Chi-square comparison
+            week1_sig = "✅" if (week1.chi_square_result and week1.chi_square_result.is_significant) else "⚪"
+            week2_sig = "✅" if (week2.chi_square_result and week2.chi_square_result.is_significant) else "⚪"
+            st.metric("Speed→Close Rate", f"{week1_sig} → {week2_sig}")
+            
+            if comparison.significance_changed:
+                st.warning("Significance changed!")
+        
+        # Bucket comparison chart
+        st.markdown("---")
+        st.markdown("#### 📊 Close Rates by Response Time Bucket")
+        
+        if not comparison.bucket_comparison.empty:
+            # Create comparison chart
+            bc = comparison.bucket_comparison
+            
+            # Prepare data for display
+            display_data = []
+            for _, row in bc.iterrows():
+                bucket = row['bucket']
+                rate1_col = [c for c in bc.columns if 'close_rate' in c and week1.week_label in c]
+                rate2_col = [c for c in bc.columns if 'close_rate' in c and week2.week_label in c]
+                
+                rate1 = row[rate1_col[0]] * 100 if rate1_col and not pd.isna(row[rate1_col[0]]) else None
+                rate2 = row[rate2_col[0]] * 100 if rate2_col and not pd.isna(row[rate2_col[0]]) else None
+                change = row.get('change_pp', None)
+                
+                display_data.append({
+                    'Response Time': bucket,
+                    f'{week1.week_label} Rate': f"{rate1:.1f}%" if rate1 is not None else "N/A",
+                    f'{week2.week_label} Rate': f"{rate2:.1f}%" if rate2 is not None else "N/A",
+                    'Change': f"{change:+.1f}pp" if change is not None and not pd.isna(change) else "N/A"
+                })
+            
+            st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True)
+        
+        # Narrative comparison story
+        st.markdown("---")
+        st.markdown("#### 📖 The Comparison Story")
+        
+        comparison_story = generate_week_comparison_story(comparison, df['ordered'].mean())
+        st.markdown(comparison_story)
+        
+        # Detailed comparison expander
+        with st.expander("📊 View Detailed Test Results for Both Weeks"):
+            detail_col1, detail_col2 = st.columns(2)
+            
+            with detail_col1:
+                st.markdown(f"##### {week1.week_label}")
+                if week1.chi_square_result:
+                    st.markdown(f"**Chi-Square:** {week1.chi_square_result.statistic:.2f} (p={week1.chi_square_result.p_value:.4f})")
+                    st.markdown(f"**Significant:** {'Yes' if week1.chi_square_result.is_significant else 'No'}")
+                else:
+                    st.markdown("*Chi-square test not available*")
+                
+                if week1.regression_result:
+                    st.markdown(f"**Regression R²:** {week1.regression_result.pseudo_r_squared:.3f}")
+                    st.markdown(f"**Speed Significant:** {'Yes' if week1.regression_result.is_response_time_significant else 'No'}")
+            
+            with detail_col2:
+                st.markdown(f"##### {week2.week_label}")
+                if week2.chi_square_result:
+                    st.markdown(f"**Chi-Square:** {week2.chi_square_result.statistic:.2f} (p={week2.chi_square_result.p_value:.4f})")
+                    st.markdown(f"**Significant:** {'Yes' if week2.chi_square_result.is_significant else 'No'}")
+                else:
+                    st.markdown("*Chi-square test not available*")
+                
+                if week2.regression_result:
+                    st.markdown(f"**Regression R²:** {week2.regression_result.pseudo_r_squared:.3f}")
+                    st.markdown(f"**Speed Significant:** {'Yes' if week2.regression_result.is_response_time_significant else 'No'}")
+
+
+def render_recommendations(stat_results, regression_result, close_rates=None) -> None:
+    """
+    Render actionable recommendations based on the analysis.
+    
+    Handles multiple scenarios:
+    - Both significant (strong evidence)
+    - Chi-square only (confounding suspected)
+    - Neither significant (no effect)
+    - Reverse effects (slower is better)
+    - Exceptional effects (very large differences)
+    """
     st.subheader("💡 Recommendations")
     
     chi_sq = stat_results['chi_square']
     
-    if chi_sq.is_significant and regression_result.is_response_time_significant:
+    # Detect reverse effect if we have close_rates data
+    is_reverse = False
+    if close_rates is not None and len(close_rates) >= 2:
+        fastest_rate = close_rates.iloc[0]['close_rate']
+        slowest_rate = close_rates.iloc[-1]['close_rate']
+        is_reverse = fastest_rate < slowest_rate
+    
+    # Detect exceptional effect
+    p_value = chi_sq.p_value if hasattr(chi_sq, 'p_value') else None
+    is_exceptional = (p_value is not None and p_value < 0.0001) or False
+    
+    # Handle reverse effect scenario
+    if is_reverse and chi_sq.is_significant:
+        st.warning("""
+        ### ⚠️ Action: Investigate Counterintuitive Finding Before Acting
+        
+        **The finding is surprising:** Slower responses are associated with higher conversion rates.
+        This contradicts conventional wisdom and requires careful investigation.
+        
+        **Recommended actions (in priority order):**
+        1. **Verify data quality:**
+           - Check for data collection errors or systematic biases
+           - Verify that response time measurements are accurate
+           - Examine if any filters or selection mechanisms might create this pattern
+        
+        2. **Investigate potential explanations:**
+           - **Selection bias:** Are high-quality leads getting slower but more thoughtful responses?
+           - **Time-of-day effects:** Do slower responses correlate with business hours when decision-makers are available?
+           - **Quality vs. speed trade-off:** Do more thorough responses (requiring more time) lead to better outcomes?
+           - **Confounders:** Are there unmeasured variables explaining both response time and conversion?
+        
+        3. **Consider the limitations of observational data:**
+           - This analysis cannot definitively establish causation
+           - Unmeasured confounders may explain the relationship
+           - Do not make major operational changes based solely on this observational analysis
+        
+        4. **Consider qualitative investigation:**
+           - Interview salespeople to understand response prioritization
+           - Analyze response content quality vs. speed
+           - Review time-of-day and day-of-week patterns
+        
+        **Critical Warning:** Do not automatically slow down responses based on this finding. 
+        The association may be spurious or explained by unmeasured factors. This observational 
+        analysis has limitations and cannot definitively establish causation.
+        """)
+    
+    # Handle exceptional positive effect
+    elif chi_sq.is_significant and regression_result.is_response_time_significant and is_exceptional:
+        st.success("""
+        ### 🚀 Action: Consider the Strength of This Association
+        
+        **The finding is exceptionally strong:** Response time shows an unusually large association 
+        with conversion rates, and this pattern persists after controlling for confounders.
+        
+        **Recommended actions (in priority order):**
+        1. **Consider the strength of this association:**
+           - The exceptional effect size suggests this relationship warrants careful consideration
+           - However, this observational analysis cannot definitively establish causation
+           - Unmeasured confounders may explain the relationship
+           - Consider this evidence when making decisions, but acknowledge the limitations
+        
+        2. **If you decide to act on this evidence:**
+           - This could represent a major optimization opportunity
+           - Set aggressive response time SLAs (e.g., respond within 15 minutes)
+           - Implement real-time alerts for leads waiting too long
+           - Consider after-hours coverage for night/weekend leads
+           - Allocate resources to response speed infrastructure
+           - Monitor response time as a key performance metric
+           - Acknowledge that the relationship may be due to confounding
+        
+        3. **Continue monitoring and analysis:**
+           - Track whether response time improvements correlate with conversion changes
+           - Investigate what factors might be driving the apparent effect
+           - Focus optimization efforts on factors that genuinely drive conversion
+        
+        4. **Document the mechanism:**
+           - If causation is confirmed, investigate WHY response speed matters so much
+           - Understand the mechanism to optimize more effectively
+           - Consider whether there are threshold effects or optimal response windows
+        
+        **Why this matters:** Effects of this magnitude are rare and could have transformative 
+        impact if causally established. However, exceptional effects in observational data can 
+        also indicate exceptional confounding. This observational analysis cannot definitively 
+        distinguish between these possibilities.
+        """)
+    
+    # Handle standard both-significant scenario
+    elif chi_sq.is_significant and regression_result.is_response_time_significant:
         st.markdown("""
-        ### Action: Validate with Experiment Before Major Investment
+        ### Action: Consider Evidence When Making Decisions
         
         Based on this analysis, faster response times are associated with 
         higher close rates, even after controlling for lead source. However, 
         this is observational data and cannot prove causation.
         
         **Recommended actions (in priority order):**
-        1. **Run a randomized A/B test** to establish causation before major investments:
-           - Randomly assign leads to fast vs. slow response conditions
-           - Ensure assignment is independent of lead characteristics
-           - Measure conversion rates in each condition
-           - This is the only way to definitively prove that speed causes success
+        1. **Consider the limitations of observational data:**
+           - This analysis cannot definitively establish causation
+           - The association could be explained by unmeasured confounders
+           - Consider this evidence when making decisions, but acknowledge the limitations
         
-        2. If experimental validation confirms the effect:
+        2. If you decide to act on this evidence:
            - Set response time SLAs (e.g., respond within 15 minutes)
            - Implement alerts for leads waiting too long
            - Consider after-hours coverage for night/weekend leads
            - Monitor response time as a key performance metric
+           - Continue monitoring to see if improvements correlate with conversion changes
         
-        3. If experimental validation does NOT confirm the effect:
-           - The observational association was likely due to confounding
+        3. Continue investigating the relationship:
+           - The observational association may be due to confounding
+           - Monitor whether response time improvements correlate with conversion changes
            - Focus optimization efforts on factors that genuinely drive conversion
         
-        **Why experimental validation matters:** The observed association could be due to 
+        **Limitations of observational data:** The observed association could be due to 
         selection mechanisms (salespeople prioritizing high-quality leads), unmeasured 
-        confounders, or reverse causation. Only a randomized experiment can rule these out.
+        confounders, or reverse causation. This analysis cannot definitively rule these out.
         
-        **Estimated impact (if causation is confirmed):** Based on the observational data, 
+        **Estimated impact (if association is causal):** Based on the observational data, 
         improving response time from the slowest bucket to the fastest could potentially 
         increase close rates by the observed difference. However, this estimate assumes 
-        causation, which requires experimental validation.
+        causation, which this observational analysis cannot definitively establish.
         """)
+    
+    # Handle chi-square significant but regression not (confounding suspected)
     elif chi_sq.is_significant:
+        from explanations.common import render_contradiction_explanation
         st.markdown("""
-        ### Action: Investigate Further Before Acting
+        ### Action: Investigate Confounding Before Acting
         
         The data shows a relationship between response time and close rate,
-        but it may be partially explained by lead source or other factors.
-        
-        **Recommended actions:**
-        1. Run an A/B test to establish causation
-        2. Analyze response time by lead source separately
-        3. Investigate if certain lead types warrant faster response
-        4. Consider the cost-benefit of faster response times
+        but this relationship disappears after controlling for lead source.
+        This strongly suggests confounding rather than a direct causal effect.
         """)
+        
+        # Show contradiction explanation if we have the data
+        try:
+            render_contradiction_explanation(
+                {'p_value': chi_sq.p_value} if hasattr(chi_sq, 'p_value') else {},
+                {'p_value': getattr(regression_result, 'p_value', None)} if hasattr(regression_result, 'p_value') else {},
+                chi_sq.is_significant,
+                False
+            )
+        except:
+            pass
+        
+        st.markdown("""
+        **Recommended actions:**
+        1. **Do NOT invest in response time improvements** based on this analysis alone
+        2. **Acknowledge the limitations** of observational data in establishing causation
+        3. **Analyze response time by lead source separately** to understand the pattern
+        4. **Investigate lead source differences:**
+           - Why do different sources have different response times?
+           - Why do different sources have different conversion rates?
+           - What drives the prioritization of certain lead types?
+        5. **Focus on lead source optimization** rather than response time if that's the true driver
+        
+        **Key insight:** The apparent response time effect is likely explained by lead source 
+        differences. Optimize lead source quality or allocation rather than response speed.
+        """)
+    
+    # Handle neither significant
     else:
         st.markdown("""
         ### Action: Focus on Other Factors
@@ -1948,10 +3428,27 @@ def render_recommendations(stat_results, regression_result, advanced_results) ->
         in this data. Other factors may be more important.
         
         **Recommended actions:**
-        1. Analyze other factors (lead quality, rep skill, timing)
-        2. Collect more data if sample size is limited
-        3. Consider if the response time range is too narrow to show an effect
-        4. Focus optimization efforts elsewhere
+        1. **Do not invest in response time improvements** based on this analysis
+        2. **Analyze other factors:**
+           - Lead quality and source differences
+           - Sales representative skill and experience
+           - Time-of-day and day-of-week effects
+           - Lead engagement and interest level
+           - Product-market fit and pricing
+        3. **Collect more data if sample size is limited:**
+           - Small samples may fail to detect real but small effects
+           - Consider if you have sufficient statistical power
+        4. **Consider if the response time range is too narrow:**
+           - If all responses are already fast (e.g., all < 30 minutes), 
+             there may be little variation to detect an effect
+        5. **Focus optimization efforts elsewhere:**
+           - Investigate factors with clearer evidence of impact
+           - Don't optimize response time if the evidence doesn't support it
+        
+        **Important:** This analysis cannot prove that response time has *no* effect — 
+        only that we cannot detect an effect with the current data. A very small effect 
+        might exist but be undetectable with this sample size. However, any such effect 
+        would likely be too small to justify major operational changes.
         """)
 
 
@@ -2012,6 +3509,36 @@ def render_export_options(df, close_rates, stat_results, regression_result) -> N
             "text/plain",
             use_container_width=True
         )
+    
+    # =========================================================================
+    # VERIFICATION CSV EXPORT
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🔍 Verification Export")
+    st.markdown("""
+    Download all raw data and calculations to verify our analysis independently.
+    This CSV contains:
+    - All leads with computed response times and bucket assignments
+    - Bucket summaries with formulas
+    - Statistical test results
+    - Regression coefficients
+    """)
+    
+    verification_csv = create_verification_csv(
+        df,
+        chi_sq_result=stat_results.get('chi_square'),
+        regression_result=regression_result,
+        descriptive_stats=close_rates
+    )
+    
+    st.download_button(
+        "📥 Download Verification Data (CSV)",
+        verification_csv,
+        "response_time_analysis_verification.csv",
+        "text/csv",
+        use_container_width=True,
+        help="Complete data export for independent verification of all calculations"
+    )
 
 
 def generate_plain_english_summary(
@@ -2069,9 +3596,8 @@ between faster response times and higher conversion rates. The probability this
 pattern is due to random chance is less than {p_value*100:.4f}%.
 
 However, this is observational data and cannot prove causation. The association 
-could be explained by unmeasured confounders or selection mechanisms. Before 
-making major investments, we recommend running a randomized controlled experiment 
-to establish causation definitively.
+could be explained by unmeasured confounders or selection mechanisms. When making 
+decisions, consider this evidence while acknowledging the limitations of observational data.
 
 """
     elif is_significant:
@@ -2168,8 +3694,8 @@ close rates, which could create a misleading pattern.)
    - Time-of-day or day-of-week effects
    - Other unmeasured confounders
 
-This observational analysis cannot prove causation. Only a randomized controlled 
-experiment can definitively establish that faster responses cause higher conversion rates.
+This observational analysis cannot prove causation. The limitations of observational 
+data mean we cannot definitively establish that faster responses cause higher conversion rates.
 
 """
     elif is_significant:
@@ -2221,14 +3747,14 @@ Logistic Regression (controls for lead source):
 
 3. STATISTICAL SIGNIFICANCE ≠ CAUSAL CERTAINTY
    A statistically significant association means the pattern is unlikely to be 
-   random. It does NOT mean the relationship is causal. Only a randomized 
-   experiment can establish causation.
+   random. It does NOT mean the relationship is causal. This observational analysis 
+   has limitations in establishing causation.
 
-4. RECOMMENDED NEXT STEP: RANDOMIZED EXPERIMENT
-   Before making major staffing or infrastructure investments, run a randomized 
-   controlled experiment (A/B test) where leads are randomly assigned to response 
-   time conditions, independent of lead characteristics. This is the only way to 
-   definitively prove that speed causes conversion.
+4. LIMITATIONS OF OBSERVATIONAL DATA
+   This analysis cannot definitively prove that speed causes conversion. The 
+   association could be explained by unmeasured confounders, selection mechanisms, 
+   or reverse causation. When making decisions about staffing or infrastructure 
+   investments, consider this evidence while acknowledging these limitations.
 
 5. RESULTS ARE SPECIFIC TO YOUR DATA
    What works in this time period and market might not apply elsewhere.

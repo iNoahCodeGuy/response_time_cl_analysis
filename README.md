@@ -67,16 +67,15 @@ Your data should include these columns (names can vary):
 
 ## 🔬 Analysis Features
 
-### Standard Analysis Mode
-- **Descriptive statistics** - Close rates by response time bucket
-- **Chi-square test** - Is there any relationship?
-- **Z-test for proportions** - Pairwise bucket comparisons
-- **Logistic regression** - Effect size controlling for lead source
+The application performs comprehensive statistical analysis:
 
-### Advanced Analysis Mode (Additional)
-- **Mixed effects model** - Control for sales rep random effects
-- **Within-rep analysis** - Compare fast vs. slow within same rep
-- **Confounding assessment** - Evaluate potential bias in results
+- **Descriptive statistics** - Close rates by response time bucket with confidence intervals
+- **Chi-square test** - Tests for overall relationship between response time and conversion
+- **Z-test for proportions** - Pairwise bucket comparisons with statistical significance
+- **Logistic regression** - Effect size controlling for lead source and other confounders
+- **Weekly trends analysis** - Week-over-week pattern analysis to assess consistency
+- **Confounding assessment** - Systematic evaluation of potential bias in results
+- **Step-by-step explanations** - Plain-English explanations of statistical concepts for non-technical users
 
 ## 📈 Understanding the Results
 
@@ -109,18 +108,26 @@ response_time_cl_analysis/
 │   ├── loader.py               # File loading and validation
 │   ├── datetime_parser.py      # Date/time format detection
 │   ├── column_mapper.py        # Column mapping logic
-│   └── sample_generator.py     # Sample data generation
+│   ├── sample_generator.py     # Sample data generation
+│   ├── weeks_analyzer.py       # Weeks of data analysis
+│   └── export.py               # Data export functionality
 │
 ├── analysis/
 │   ├── preprocessing.py        # Response time bucketing
 │   ├── descriptive.py          # Summary statistics
 │   ├── statistical_tests.py    # Chi-square, z-tests
 │   ├── regression.py           # Logistic regression
-│   └── advanced.py             # Mixed effects, within-rep analysis
+│   └── weekly_trends.py        # Week-over-week trend analysis
 │
 ├── explanations/
-│   ├── templates.py            # Plain-English explanations
-│   └── formulas.py             # LaTeX formulas
+│   ├── templates.py            # Plain-English explanation templates
+│   ├── formulas.py             # LaTeX formulas
+│   ├── common.py               # Common explanation utilities
+│   ├── explainers.py           # Statistical concept explainers
+│   ├── p_value.py              # P-value explanations
+│   ├── odds_ratio.py           # Odds ratio explanations
+│   ├── confidence_intervals.py # Confidence interval explanations
+│   └── verification_panels.py  # Verification and validation panels
 │
 └── components/
     ├── upload.py               # File upload interface
@@ -140,7 +147,7 @@ This analysis has important limitations to keep in mind:
 3. **Selection Bias** - Only analyzes leads that received responses
 4. **External Validity** - Results may not generalize to different contexts
 
-**For causal conclusions**, consider running an A/B test where response times are randomly varied.
+**For causal conclusions**, note that this observational analysis has limitations in establishing causation. We cannot deliberately delay responses to test the relationship.
 
 ## 🛠️ Customization
 
@@ -188,7 +195,7 @@ Contributions are welcome! Areas for improvement:
 - Additional statistical tests
 - More visualization options
 - Enhanced confounding diagnostics
-- A/B test power calculator
+- Additional data export formats
 
 ## 📝 License
 

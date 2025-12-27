@@ -693,6 +693,583 @@ def get_wow_comparison(weekly_stats: pd.DataFrame) -> Dict[str, Any]:
 
 
 # =============================================================================
+# WEEKLY DEEP DIVE FUNCTIONS
+# =============================================================================
+# These functions allow running full statistical analysis on individual weeks
+# and comparing weeks against each other.
+
+@dataclass
+class WeeklyDeepDiveResult:
+    """
+    Container for full statistical analysis of a single week.
+    
+    WHAT'S INSIDE:
+    --------------
+    week_start : datetime
+        The Monday that starts this week
+    week_label : str
+        Human-readable week label (e.g., "Dec 16")
+    n_leads : int
+        Number of leads this week
+    n_orders : int
+        Number of orders this week
+    close_rate : float
+        Overall close rate for the week
+    close_rates_by_bucket : DataFrame
+        Close rates by response time bucket
+    chi_square_result : TestResult
+        Chi-square test results (or None if insufficient data)
+    pairwise_results : List
+        Pairwise z-test results (or empty list)
+    regression_result : RegressionResult
+        Logistic regression results (or None if insufficient data)
+    has_sufficient_data : bool
+        Whether the week has enough data for reliable analysis
+    warnings : List[str]
+        Any warnings about data quality
+    """
+    week_start: Any  # datetime
+    week_label: str
+    n_leads: int
+    n_orders: int
+    close_rate: float
+    close_rates_by_bucket: pd.DataFrame
+    chi_square_result: Any  # TestResult or None
+    pairwise_results: List[Any]
+    regression_result: Any  # RegressionResult or None
+    has_sufficient_data: bool
+    warnings: List[str]
+
+
+@dataclass
+class WeekComparisonResult:
+    """
+    Container for comparison between two weeks.
+    
+    WHAT'S INSIDE:
+    --------------
+    week1 : WeeklyDeepDiveResult
+        Full analysis for week 1
+    week2 : WeeklyDeepDiveResult
+        Full analysis for week 2
+    close_rate_change : float
+        Percentage point change in close rate
+    bucket_comparison : DataFrame
+        Side-by-side close rates by bucket
+    significance_changed : bool
+        Whether chi-square significance changed between weeks
+    narrative : str
+        Plain-English comparison summary
+    """
+    week1: WeeklyDeepDiveResult
+    week2: WeeklyDeepDiveResult
+    close_rate_change: float
+    bucket_comparison: pd.DataFrame
+    significance_changed: bool
+    narrative: str
+
+
+def get_week_data(
+    df: pd.DataFrame,
+    week_start: Any,
+    date_column: str = 'lead_time'
+) -> pd.DataFrame:
+    """
+    Filter DataFrame to only include data from a specific week.
+    
+    WHY THIS FUNCTION:
+    ------------------
+    To run statistical tests on a single week's data, we first need
+    to extract just that week from the full dataset.
+    
+    PARAMETERS:
+    -----------
+    df : pd.DataFrame
+        The full preprocessed DataFrame
+    week_start : datetime or str
+        The Monday that starts the week to filter to
+    date_column : str
+        Name of the datetime column
+        
+    RETURNS:
+    --------
+    pd.DataFrame
+        Filtered DataFrame containing only the specified week's data
+        
+    EXAMPLE:
+    --------
+    >>> week_df = get_week_data(df, '2024-12-16')
+    >>> print(f"Week has {len(week_df)} leads")
+    """
+    df_copy = df.copy()
+    
+    # Convert date column to datetime if needed
+    if not pd.api.types.is_datetime64_any_dtype(df_copy[date_column]):
+        df_copy[date_column] = pd.to_datetime(df_copy[date_column])
+    
+    # Convert week_start to datetime if it's a string
+    if isinstance(week_start, str):
+        week_start = pd.to_datetime(week_start)
+    
+    # Get the week start (Monday) for each row
+    df_copy['_week_start'] = df_copy[date_column].dt.to_period('W-MON').dt.start_time
+    
+    # Filter to the specified week
+    week_df = df_copy[df_copy['_week_start'] == week_start].copy()
+    
+    # Drop the temporary column
+    week_df = week_df.drop(columns=['_week_start'])
+    
+    return week_df
+
+
+def get_available_weeks(
+    df: pd.DataFrame,
+    date_column: str = 'lead_time'
+) -> List[Dict[str, Any]]:
+    """
+    Get list of available weeks in the dataset with metadata.
+    
+    WHY THIS FUNCTION:
+    ------------------
+    To populate week selector dropdowns, we need to know what weeks
+    are available and provide useful labels for each.
+    
+    PARAMETERS:
+    -----------
+    df : pd.DataFrame
+        The preprocessed DataFrame
+    date_column : str
+        Name of the datetime column
+        
+    RETURNS:
+    --------
+    List[Dict[str, Any]]
+        List of week info dicts with keys:
+        - week_start: datetime
+        - week_label: str (e.g., "Dec 16")
+        - n_leads: int
+        - n_orders: int
+        - close_rate: float
+        
+    EXAMPLE:
+    --------
+    >>> weeks = get_available_weeks(df)
+    >>> for week in weeks:
+    ...     print(f"{week['week_label']}: {week['n_leads']} leads")
+    """
+    df_copy = df.copy()
+    
+    # Convert date column to datetime if needed
+    if not pd.api.types.is_datetime64_any_dtype(df_copy[date_column]):
+        df_copy[date_column] = pd.to_datetime(df_copy[date_column])
+    
+    # Get the week start (Monday) for each row
+    df_copy['week_start'] = df_copy[date_column].dt.to_period('W-MON').dt.start_time
+    
+    # Aggregate by week
+    weekly = df_copy.groupby('week_start').agg(
+        n_leads=('ordered', 'count'),
+        n_orders=('ordered', 'sum'),
+        close_rate=('ordered', 'mean')
+    ).reset_index()
+    
+    # Sort by date (oldest first)
+    weekly = weekly.sort_values('week_start').reset_index(drop=True)
+    
+    # Convert to list of dicts with labels
+    weeks = []
+    for _, row in weekly.iterrows():
+        weeks.append({
+            'week_start': row['week_start'],
+            'week_label': row['week_start'].strftime('%b %d'),
+            'week_end': (row['week_start'] + pd.Timedelta(days=6)).strftime('%b %d'),
+            'n_leads': int(row['n_leads']),
+            'n_orders': int(row['n_orders']),
+            'close_rate': row['close_rate']
+        })
+    
+    return weeks
+
+
+def run_weekly_statistical_analysis(
+    df: pd.DataFrame,
+    week_start: Any,
+    alpha: float = 0.05,
+    date_column: str = 'lead_time'
+) -> WeeklyDeepDiveResult:
+    """
+    Run full statistical analysis on a single week's data.
+    
+    WHY THIS FUNCTION:
+    ------------------
+    This allows users to "zoom in" on a specific week and see all
+    the same statistical tests that run on the overall data:
+    - Chi-square test of independence
+    - Pairwise z-tests for proportions
+    - Logistic regression with lead source control
+    
+    HOW IT WORKS:
+    -------------
+    1. Filter data to the specified week
+    2. Check if there's sufficient data for reliable analysis
+    3. Run close rate calculations by bucket
+    4. Run chi-square test (if sufficient data)
+    5. Run pairwise comparisons (if sufficient data)
+    6. Run logistic regression (if sufficient data)
+    7. Package results with appropriate warnings
+    
+    PARAMETERS:
+    -----------
+    df : pd.DataFrame
+        The full preprocessed DataFrame
+    week_start : datetime or str
+        The Monday that starts the week to analyze
+    alpha : float
+        Significance level for hypothesis tests
+    date_column : str
+        Name of the datetime column
+        
+    RETURNS:
+    --------
+    WeeklyDeepDiveResult
+        Complete analysis results for the week
+        
+    EXAMPLE:
+    --------
+    >>> result = run_weekly_statistical_analysis(df, '2024-12-16')
+    >>> print(f"Chi-square significant: {result.chi_square_result.is_significant}")
+    """
+    # Import here to avoid circular imports
+    from analysis.descriptive import calculate_close_rates
+    from analysis.statistical_tests import run_chi_square_test, run_pairwise_comparisons
+    from analysis.regression import run_logistic_regression
+    
+    # Filter to the specified week
+    week_df = get_week_data(df, week_start, date_column)
+    
+    # Convert week_start for display
+    if isinstance(week_start, str):
+        week_start = pd.to_datetime(week_start)
+    week_label = week_start.strftime('%b %d')
+    
+    # Calculate basic metrics
+    n_leads = len(week_df)
+    n_orders = int(week_df['ordered'].sum()) if n_leads > 0 else 0
+    close_rate = week_df['ordered'].mean() if n_leads > 0 else 0
+    
+    # Initialize warnings list
+    warnings = []
+    
+    # Check for sufficient data
+    MIN_LEADS_FOR_ANALYSIS = 50
+    MIN_LEADS_PER_BUCKET = 10
+    
+    has_sufficient_data = n_leads >= MIN_LEADS_FOR_ANALYSIS
+    
+    if n_leads < MIN_LEADS_FOR_ANALYSIS:
+        warnings.append(
+            f"This week has only {n_leads} leads. Statistical tests require at least "
+            f"{MIN_LEADS_FOR_ANALYSIS} leads for reliable results. Interpret with caution."
+        )
+    
+    # Calculate close rates by bucket (always do this)
+    close_rates_by_bucket = pd.DataFrame()
+    if n_leads > 0 and 'response_bucket' in week_df.columns:
+        try:
+            close_rates_by_bucket = calculate_close_rates(week_df)
+            
+            # Check bucket sizes
+            for _, row in close_rates_by_bucket.iterrows():
+                if row['n_leads'] < MIN_LEADS_PER_BUCKET:
+                    warnings.append(
+                        f"Bucket '{row['bucket']}' has only {int(row['n_leads'])} leads. "
+                        f"Results for this bucket may be unreliable."
+                    )
+        except Exception as e:
+            warnings.append(f"Could not calculate close rates by bucket: {str(e)}")
+    
+    # Run chi-square test (if sufficient data)
+    chi_square_result = None
+    if has_sufficient_data and 'response_bucket' in week_df.columns:
+        try:
+            chi_square_result = run_chi_square_test(week_df, alpha)
+        except Exception as e:
+            warnings.append(f"Chi-square test failed: {str(e)}")
+    
+    # Run pairwise comparisons (if sufficient data)
+    pairwise_results = []
+    if has_sufficient_data and 'response_bucket' in week_df.columns:
+        try:
+            pairwise_results = run_pairwise_comparisons(week_df, alpha)
+        except Exception as e:
+            warnings.append(f"Pairwise comparisons failed: {str(e)}")
+    
+    # Run logistic regression (if sufficient data)
+    regression_result = None
+    if has_sufficient_data and 'response_bucket' in week_df.columns:
+        try:
+            regression_result = run_logistic_regression(week_df, include_lead_source=True)
+        except Exception as e:
+            warnings.append(f"Logistic regression failed: {str(e)}")
+    
+    return WeeklyDeepDiveResult(
+        week_start=week_start,
+        week_label=week_label,
+        n_leads=n_leads,
+        n_orders=n_orders,
+        close_rate=close_rate,
+        close_rates_by_bucket=close_rates_by_bucket,
+        chi_square_result=chi_square_result,
+        pairwise_results=pairwise_results,
+        regression_result=regression_result,
+        has_sufficient_data=has_sufficient_data,
+        warnings=warnings
+    )
+
+
+def compare_two_weeks(
+    df: pd.DataFrame,
+    week1_start: Any,
+    week2_start: Any,
+    alpha: float = 0.05,
+    date_column: str = 'lead_time'
+) -> WeekComparisonResult:
+    """
+    Compare statistical results between two specific weeks.
+    
+    WHY THIS FUNCTION:
+    ------------------
+    Users often want to understand what changed between two weeks.
+    This function runs full analysis on both weeks and generates
+    a meaningful comparison with narrative explanation.
+    
+    HOW IT WORKS:
+    -------------
+    1. Run full statistical analysis on both weeks
+    2. Compare close rates overall and by bucket
+    3. Check if significance changed
+    4. Generate narrative explaining the differences
+    
+    PARAMETERS:
+    -----------
+    df : pd.DataFrame
+        The full preprocessed DataFrame
+    week1_start : datetime or str
+        The Monday that starts the first week
+    week2_start : datetime or str
+        The Monday that starts the second week
+    alpha : float
+        Significance level for hypothesis tests
+    date_column : str
+        Name of the datetime column
+        
+    RETURNS:
+    --------
+    WeekComparisonResult
+        Comparison results including both weeks' analyses and narrative
+        
+    EXAMPLE:
+    --------
+    >>> comparison = compare_two_weeks(df, '2024-12-09', '2024-12-16')
+    >>> print(comparison.narrative)
+    """
+    # Run full analysis on both weeks
+    week1_result = run_weekly_statistical_analysis(df, week1_start, alpha, date_column)
+    week2_result = run_weekly_statistical_analysis(df, week2_start, alpha, date_column)
+    
+    # Calculate close rate change (percentage points)
+    close_rate_change = (week2_result.close_rate - week1_result.close_rate) * 100
+    
+    # Create bucket comparison DataFrame
+    bucket_comparison = _create_bucket_comparison(
+        week1_result.close_rates_by_bucket,
+        week2_result.close_rates_by_bucket,
+        week1_result.week_label,
+        week2_result.week_label
+    )
+    
+    # Check if chi-square significance changed
+    week1_sig = (week1_result.chi_square_result.is_significant 
+                 if week1_result.chi_square_result else None)
+    week2_sig = (week2_result.chi_square_result.is_significant 
+                 if week2_result.chi_square_result else None)
+    significance_changed = week1_sig != week2_sig
+    
+    # Generate comparison narrative
+    narrative = _generate_comparison_narrative(
+        week1_result, week2_result, close_rate_change, significance_changed
+    )
+    
+    return WeekComparisonResult(
+        week1=week1_result,
+        week2=week2_result,
+        close_rate_change=close_rate_change,
+        bucket_comparison=bucket_comparison,
+        significance_changed=significance_changed,
+        narrative=narrative
+    )
+
+
+def _create_bucket_comparison(
+    df1: pd.DataFrame,
+    df2: pd.DataFrame,
+    label1: str,
+    label2: str
+) -> pd.DataFrame:
+    """
+    Create a side-by-side comparison of close rates by bucket.
+    
+    PARAMETERS:
+    -----------
+    df1 : pd.DataFrame
+        Close rates by bucket for week 1
+    df2 : pd.DataFrame
+        Close rates by bucket for week 2
+    label1 : str
+        Label for week 1
+    label2 : str
+        Label for week 2
+        
+    RETURNS:
+    --------
+    pd.DataFrame
+        Comparison table with both weeks and the difference
+    """
+    if df1.empty or df2.empty:
+        return pd.DataFrame()
+    
+    # Merge on bucket
+    comparison = df1[['bucket', 'close_rate', 'n_leads']].copy()
+    comparison = comparison.rename(columns={
+        'close_rate': f'close_rate_{label1}',
+        'n_leads': f'n_leads_{label1}'
+    })
+    
+    df2_subset = df2[['bucket', 'close_rate', 'n_leads']].copy()
+    df2_subset = df2_subset.rename(columns={
+        'close_rate': f'close_rate_{label2}',
+        'n_leads': f'n_leads_{label2}'
+    })
+    
+    comparison = comparison.merge(df2_subset, on='bucket', how='outer')
+    
+    # Calculate change
+    comparison['change_pp'] = (
+        comparison[f'close_rate_{label2}'] - comparison[f'close_rate_{label1}']
+    ) * 100
+    
+    return comparison
+
+
+def _generate_comparison_narrative(
+    week1: WeeklyDeepDiveResult,
+    week2: WeeklyDeepDiveResult,
+    close_rate_change: float,
+    significance_changed: bool
+) -> str:
+    """
+    Generate a plain-English narrative comparing two weeks.
+    
+    WHY THIS MATTERS:
+    -----------------
+    Non-technical users need to understand what changed between
+    weeks without diving into statistical details. This function
+    tells the story of the comparison.
+    
+    PARAMETERS:
+    -----------
+    week1 : WeeklyDeepDiveResult
+        Analysis results for week 1
+    week2 : WeeklyDeepDiveResult
+        Analysis results for week 2
+    close_rate_change : float
+        Change in close rate (percentage points)
+    significance_changed : bool
+        Whether statistical significance changed
+        
+    RETURNS:
+    --------
+    str
+        Narrative explanation of the comparison
+    """
+    narrative_parts = []
+    
+    # Opening context
+    narrative_parts.append(
+        f"**Comparing {week1.week_label} to {week2.week_label}:**\n"
+    )
+    
+    # Volume comparison
+    lead_change = week2.n_leads - week1.n_leads
+    lead_change_pct = (lead_change / week1.n_leads * 100) if week1.n_leads > 0 else 0
+    
+    if abs(lead_change_pct) < 5:
+        narrative_parts.append(
+            f"Lead volume was similar ({week1.n_leads:,} vs {week2.n_leads:,})."
+        )
+    elif lead_change > 0:
+        narrative_parts.append(
+            f"Lead volume increased by {lead_change_pct:.1f}% ({week1.n_leads:,} → {week2.n_leads:,})."
+        )
+    else:
+        narrative_parts.append(
+            f"Lead volume decreased by {abs(lead_change_pct):.1f}% ({week1.n_leads:,} → {week2.n_leads:,})."
+        )
+    
+    # Close rate comparison
+    if abs(close_rate_change) < 0.5:
+        narrative_parts.append(
+            f"Close rates were nearly identical ({week1.close_rate*100:.1f}% vs {week2.close_rate*100:.1f}%)."
+        )
+    elif close_rate_change > 0:
+        narrative_parts.append(
+            f"Close rate **improved** by {close_rate_change:.1f} percentage points "
+            f"({week1.close_rate*100:.1f}% → {week2.close_rate*100:.1f}%)."
+        )
+    else:
+        narrative_parts.append(
+            f"Close rate **declined** by {abs(close_rate_change):.1f} percentage points "
+            f"({week1.close_rate*100:.1f}% → {week2.close_rate*100:.1f}%)."
+        )
+    
+    # Significance comparison
+    if significance_changed:
+        week1_sig = week1.chi_square_result.is_significant if week1.chi_square_result else None
+        week2_sig = week2.chi_square_result.is_significant if week2.chi_square_result else None
+        
+        if week1_sig and not week2_sig:
+            narrative_parts.append(
+                f"\n\n**Statistical significance changed:** In {week1.week_label}, response time "
+                f"had a statistically significant relationship with close rate. In {week2.week_label}, "
+                f"this relationship was no longer significant. This could indicate that other factors "
+                f"became more important, or it could simply be due to smaller sample size."
+            )
+        elif not week1_sig and week2_sig:
+            narrative_parts.append(
+                f"\n\n**Statistical significance changed:** In {week1.week_label}, the response time "
+                f"effect was not statistically significant. In {week2.week_label}, it became significant. "
+                f"This suggests the relationship between response speed and close rate strengthened."
+            )
+    else:
+        # Both significant or both not significant
+        if week1.chi_square_result and week1.chi_square_result.is_significant:
+            narrative_parts.append(
+                f"\n\nIn both weeks, response time showed a statistically significant relationship "
+                f"with close rate. The pattern is consistent."
+            )
+    
+    # Data quality warnings
+    if not week1.has_sufficient_data or not week2.has_sufficient_data:
+        narrative_parts.append(
+            f"\n\n⚠️ **Note:** One or both weeks have limited data, which reduces the reliability "
+            f"of this comparison. Interpret with caution."
+        )
+    
+    return " ".join(narrative_parts)
+
+
+# =============================================================================
 # FOR TESTING THIS MODULE DIRECTLY
 # =============================================================================
 

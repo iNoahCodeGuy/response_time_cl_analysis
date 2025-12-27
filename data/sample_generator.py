@@ -26,6 +26,7 @@ from typing import Optional
 import sys
 import os
 import time
+import secrets
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -104,12 +105,24 @@ def generate_sample_data(
     >>> sample_df = generate_sample_data(n_weeks=8, random_seed=42)
     """
     # Set random seed only if provided (for reproducibility)
-    # If None, use current time to ensure different data each time
+    # If None, use a combination of high-resolution time and random bits to ensure uniqueness
     if random_seed is not None:
         np.random.seed(random_seed)
     else:
-        # Use current time in microseconds as seed to ensure uniqueness
-        np.random.seed(int(time.time() * 1_000_000) % (2**32))
+        # Combine high-resolution time with random bits for true uniqueness
+        # time.time_ns() gives nanosecond precision (Python 3.7+)
+        # secrets.randbits(32) adds 32 random bits to prevent collisions
+        # This ensures different data every time, even if called in quick succession
+        try:
+            # Use nanoseconds if available (Python 3.7+)
+            time_component = time.time_ns()
+        except AttributeError:
+            # Fallback for older Python versions: combine time with process ID
+            time_component = int(time.time() * 1_000_000_000) + os.getpid()
+        
+        random_component = secrets.randbits(32)
+        combined_seed = (time_component ^ random_component) % (2**32)
+        np.random.seed(combined_seed)
     
     # Get config values
     config = SAMPLE_DATA_CONFIG
@@ -262,7 +275,14 @@ def generate_sample_data(
     
     # Vary rep skill effect strength to reduce confounding in some datasets
     # Sometimes rep skill has strong effect (creates confounding), sometimes weaker
-    rep_skill_strength = np.random.uniform(0.7, 1.0)  # Reduce rep skill impact by up to 30%
+    # IMPORTANT: When effect_strength is very low, reduce rep skill effect to prevent
+    # confounding from creating spurious significance when there's no true response time effect
+    if effect_strength < 0.2:
+        # Very low response time effect - reduce rep skill variation to avoid confounding
+        rep_skill_strength = np.random.uniform(0.3, 0.6)  # Much weaker rep skill effect
+    else:
+        rep_skill_strength = np.random.uniform(0.7, 1.0)  # Normal rep skill impact
+    
     rep_skill_effect = 1.0 + (rep_skill_values - 1.0) * rep_skill_strength
     # Add per-lead variation
     rep_skill_effect = rep_skill_effect * np.random.uniform(0.92, 1.08, n)
@@ -270,10 +290,24 @@ def generate_sample_data(
     # Combined close probability
     close_prob = base_close_rates * response_time_effect * rep_skill_effect
     
-    # Add substantial random noise to make relationships less deterministic
+    # Add adaptive random noise to make relationships less deterministic
+    # When effect_strength is low, use MUCH stronger noise to ensure non-significant results
     # This simulates other unmeasured factors affecting outcomes
-    # Large noise helps reduce significance when effects are weak
-    noise_factor = np.random.uniform(0.80, 1.20, n)
+    # Stronger noise when effects are weak helps create realistic variation in p-values
+    if effect_strength < 0.2:
+        # Very weak effect - use very strong noise (60% to 140%) to mask any weak associations
+        noise_range = (0.60, 1.40)
+    elif effect_strength < 0.5:
+        # Weak effect - use moderate-strong noise (70% to 130%)
+        noise_range = (0.70, 1.30)
+    elif effect_strength < 1.0:
+        # Moderate effect - use moderate noise (75% to 125%)
+        noise_range = (0.75, 1.25)
+    else:
+        # Strong effect - use normal noise (80% to 120%)
+        noise_range = (0.80, 1.20)
+    
+    noise_factor = np.random.uniform(noise_range[0], noise_range[1], n)
     close_prob = close_prob * noise_factor
     
     # Ensure probabilities are in valid range [0, 1]
