@@ -293,11 +293,13 @@ class ColumnMapper:
         -----------------
         The rest of the analysis expects columns with specific names.
         This function creates a new DataFrame with our standard names.
+        Optional columns are only included if they were mapped.
         
         RETURNS:
         --------
         pd.DataFrame
             New DataFrame with standardized column names and types
+            Only includes columns that were successfully mapped
             
         RAISES:
         -------
@@ -310,7 +312,7 @@ class ColumnMapper:
         >>> if mapper.is_complete():
         ...     standardized_df = mapper.apply_mapping()
         ...     print(standardized_df.columns)
-        Index(['lead_time', 'response_time', 'lead_source', 'sales_rep', 'ordered'])
+        Index(['lead_time', 'response_time', 'ordered'])  # Optional columns may be missing
         """
         if not self.is_complete():
             missing = self.get_missing_columns()

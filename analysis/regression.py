@@ -88,8 +88,14 @@ def prepare_regression_data(
     # Start with copy
     result = df.copy()
     
-    # Remove missing values
-    cols_needed = ['ordered', 'response_bucket', 'lead_source']
+    # Remove missing values - only include columns that exist
+    cols_needed = ['ordered', 'response_bucket']
+    # Only add lead_source/sales_rep if they exist in the dataframe
+    if 'lead_source' in result.columns:
+        cols_needed.append('lead_source')
+    if 'sales_rep' in result.columns:
+        cols_needed.append('sales_rep')
+    
     result = result.dropna(subset=cols_needed)
     
     # Ensure ordered is 0/1

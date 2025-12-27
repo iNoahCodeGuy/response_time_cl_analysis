@@ -140,8 +140,12 @@ def render_results_dashboard(
         # Statistical tests
         stat_results = run_all_statistical_tests(df, alpha)
         
-        # Regression
-        regression_result = run_logistic_regression(df, include_lead_source=True)
+        # Regression - include lead_source control if column exists
+        regression_result = run_logistic_regression(
+            df, 
+            include_lead_source=('lead_source' in df.columns),
+            include_sales_rep=('sales_rep' in df.columns and df['sales_rep'].nunique() <= 20)
+        )
         
         # Weekly trends (if we have date data)
         weekly_analysis = None

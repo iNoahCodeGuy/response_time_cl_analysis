@@ -126,7 +126,8 @@ EXPECTED_COLUMNS = {
         'required': True,
         'common_names': [
             'lead_time', 'lead_date', 'created_at', 'submission_time',
-            'lead_created', 'date_created', 'timestamp', 'lead_timestamp'
+            'lead_created', 'date_created', 'timestamp', 'lead_timestamp',
+            'received_time'  # GitHub repo compatibility
         ]
     },
     'response_time': {
@@ -135,13 +136,14 @@ EXPECTED_COLUMNS = {
         'required': True,
         'common_names': [
             'response_time', 'first_response', 'first_message', 'contacted_at',
-            'first_contact', 'response_date', 'first_reply', 'replied_at'
+            'first_contact', 'response_date', 'first_reply', 'replied_at',
+            'first_contact_time'  # GitHub repo compatibility
         ]
     },
     'lead_source': {
         'description': 'Where the lead came from',
         'type': 'categorical',
-        'required': True,
+        'required': False,  # Optional - analysis works but without lead source controls
         'common_names': [
             'lead_source', 'source', 'channel', 'lead_channel', 
             'marketing_source', 'origin', 'lead_origin', 'traffic_source'
@@ -150,7 +152,7 @@ EXPECTED_COLUMNS = {
     'sales_rep': {
         'description': 'Who handled the lead',
         'type': 'categorical',
-        'required': True,
+        'required': False,  # Optional - analysis works but without rep-level controls
         'common_names': [
             'sales_rep', 'rep', 'salesperson', 'agent', 'owner',
             'assigned_to', 'rep_name', 'sales_agent', 'team_member'

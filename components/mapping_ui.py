@@ -237,9 +237,28 @@ def render_column_mapping(df: pd.DataFrame) -> Tuple[Optional[pd.DataFrame], boo
     # Check if mapping is complete
     missing = mapper.get_missing_columns()
     
-    if missing:
-        st.error(f"❌ Please map the following required columns: {', '.join(missing)}")
+    # Separate required vs optional missing columns
+    missing_required = [
+        col for col in missing 
+        if EXPECTED_COLUMNS[col]['required']
+    ]
+    missing_optional = [
+        col for col in missing 
+        if not EXPECTED_COLUMNS[col]['required']
+    ]
+    
+    if missing_required:
+        st.error(f"❌ Please map the following required columns: {', '.join(missing_required)}")
         mapping_complete = False
+    
+    if missing_optional:
+        st.warning(f"⚠️ Optional columns not mapped: {', '.join(missing_optional)}")
+        st.info("""
+        **Note:** Your analysis will still run, but will be less rigorous:
+        - Without **lead_source**: Cannot control for differences in lead quality by source
+        - Without **sales_rep**: Cannot control for differences in rep skill/performance
+        - Statistical tests will still work, but results may be confounded by these factors
+        """)
     
     # Validate the mapping
     if mapping_complete:

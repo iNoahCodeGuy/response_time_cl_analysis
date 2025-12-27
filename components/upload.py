@@ -72,9 +72,11 @@ def render_upload_section() -> Tuple[Optional[pd.DataFrame], str]:
     **Required columns:**
     - Lead arrival time (when the lead came in)
     - First response time (when someone first responded)
-    - Lead source (where the lead came from)
-    - Sales rep (who handled the lead)
     - Order outcome (did the customer order?)
+    
+    **Optional columns (for more rigorous analysis):**
+    - Lead source (where the lead came from) - enables controlling for lead quality differences
+    - Sales rep (who handled the lead) - enables controlling for rep skill differences
     """)
     
     # =========================================================================
@@ -400,13 +402,20 @@ def render_upload_help() -> None:
         
         Your data should include these columns (names can vary):
         
+        **Required columns:**
+        
         | What We Need | Example Column Names |
         |--------------|---------------------|
-        | Lead arrival time | `created_at`, `lead_time`, `timestamp` |
-        | First response time | `first_response`, `replied_at`, `contacted_at` |
+        | Lead arrival time | `created_at`, `lead_time`, `timestamp`, `received_time` |
+        | First response time | `first_response`, `replied_at`, `contacted_at`, `first_contact_time` |
+        | Order outcome | `ordered`, `sold`, `converted` |
+        
+        **Optional columns (for more rigorous analysis):**
+        
+        | What We Need | Example Column Names |
+        |--------------|---------------------|
         | Lead source | `source`, `channel`, `lead_source` |
         | Sales rep | `rep`, `agent`, `salesperson` |
-        | Order outcome | `ordered`, `sold`, `converted` |
         
         ### Date formats we support
         
